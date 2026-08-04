@@ -23,6 +23,14 @@ function getMinDurationSeconds() {
   return Number.isFinite(n) ? n : 15;
 }
 
+/** Optional cap so a first cron run doesn't burn through the whole backlog. */
+function getMaxFilesPerRun() {
+  const raw = process.env.MAX_FILES_PER_RUN;
+  if (raw == null || raw === '') return Infinity;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : Infinity;
+}
+
 function getTranscriptsFolderId(recordingsFolderId) {
   const transcripts = process.env.DRIVE_TRANSCRIPTS_FOLDER_ID;
   if (transcripts && transcripts.trim()) return transcripts.trim();
@@ -63,6 +71,7 @@ async function processRecording(drive, recording, transcriptsFolderId, stateData
 
 async function main() {
   const minDuration = getMinDurationSeconds();
+  const maxFilesPerRun = getMaxFilesPerRun();
 
   const drive = createDriveClient();
   const recordingsFolderId = await resolveRecordingsFolderId(drive);
@@ -70,6 +79,9 @@ async function main() {
 
   console.log(`Recordings folder: ${recordingsFolderId}`);
   console.log(`Transcripts folder: ${transcriptsFolderId}`);
+  if (Number.isFinite(maxFilesPerRun)) {
+    console.log(`MAX_FILES_PER_RUN=${maxFilesPerRun}`);
+  }
 
   const { fileId: initialStateFileId, data: stateData } = await loadState(
     drive,
@@ -85,6 +97,7 @@ async function main() {
   let errored = 0;
   let skippedShort = 0;
   let stateDirty = false;
+  let attempted = 0;
 
   async function flushState() {
     stateFileId = await saveState(drive, recordingsFolderId, stateFileId, stateData);
@@ -97,6 +110,11 @@ async function main() {
     }
 
     newCount += 1;
+
+    if (attempted >= maxFilesPerRun) {
+      continue;
+    }
+    attempted += 1;
 
     const duration = recording.durationSeconds;
     if (duration == null) {
