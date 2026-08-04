@@ -7,7 +7,9 @@ const SKIP_STATUSES = new Set([
   'done',
   'skipped_short',
   'skipped_long',
-  'transcribing',
+  'skipped_backlog',
+  // "transcribing" is intentionally NOT skipped forever — a crashed run can leave
+  // that status; the next cron should retry it.
 ]);
 
 export function getAlreadyProcessedIds(stateData) {
@@ -75,6 +77,17 @@ export function markSkippedLong(stateData, recording) {
     file_name: recording.name,
     duration_seconds: recording.durationSeconds,
     status: 'skipped_long',
+    error: null,
+    completed_at: new Date().toISOString(),
+  });
+}
+
+/** Older recordings left alone so the job only watches new call drops. */
+export function markSkippedBacklog(stateData, recording) {
+  return setFileState(stateData, recording.id, {
+    file_name: recording.name,
+    duration_seconds: recording.durationSeconds,
+    status: 'skipped_backlog',
     error: null,
     completed_at: new Date().toISOString(),
   });

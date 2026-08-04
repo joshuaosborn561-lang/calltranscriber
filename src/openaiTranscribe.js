@@ -2,6 +2,14 @@
  * Send audio bytes to OpenAI's transcription endpoint and return plain text.
  * Uses native fetch / FormData / Blob (Node 20+).
  */
+
+export class OpenAIQuotaError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'OpenAIQuotaError';
+  }
+}
+
 export async function transcribeAudio(fileName, audioBuffer) {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
@@ -16,7 +24,6 @@ export async function transcribeAudio(fileName, audioBuffer) {
   form.append('model', 'gpt-4o-mini-transcribe');
   form.append('response_format', 'json');
 
-
   const res = await fetch('https://api.openai.com/v1/audio/transcriptions', {
     method: 'POST',
     headers: {
@@ -27,6 +34,16 @@ export async function transcribeAudio(fileName, audioBuffer) {
 
   if (!res.ok) {
     const body = await res.text();
+    if (
+      res.status === 429 &&
+      /insufficient_quota|credit_balance_exhausted|exceeded your current quota/i.test(
+        body,
+      )
+    ) {
+      throw new OpenAIQuotaError(
+        `OpenAI transcription failed (${res.status}): ${body}`,
+      );
+    }
     throw new Error(`OpenAI transcription failed (${res.status}): ${body}`);
   }
 

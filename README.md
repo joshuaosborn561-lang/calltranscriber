@@ -54,9 +54,11 @@ Each recording needs a sidecar JSON with the **same base name** in the same fold
 
 `duration` is **milliseconds**. Only calls **longer than 2 minutes** and **shorter than 30 minutes** are transcribed (`MIN_DURATION_SECONDS=120`, `MAX_DURATION_SECONDS=1800`).
 
+Set `PROCESS_CREATED_AFTER` (ISO timestamp) so the cron only watches **new call drops** after that time instead of replaying the whole Cube ACR history. Newest recordings are processed first.
+
 ## 4. State file (no database)
 
-Progress is stored in Drive as `.call-transcriber-state.json` inside the recordings root. Statuses: `transcribing`, `done`, `error`, `skipped_short`, `skipped_long`. Files in `done`, `skipped_short`, `skipped_long`, or `transcribing` are not reprocessed.
+Progress is stored in Drive as `.call-transcriber-state.json` inside the recordings root. Statuses: `transcribing`, `done`, `error`, `skipped_short`, `skipped_long`, `skipped_backlog`. Files in `done` / `skipped_*` are not reprocessed.
 
 ## 5. Local run
 
@@ -72,7 +74,7 @@ npm start
 1. Deploy this repo to Railway.
 2. Service settings:
    - **Start Command:** `npm start`
-   - **Cron Schedule:** e.g. `*/30 * * * *`
+   - **Cron Schedule:** e.g. `*/5 * * * *` (checks for new dropped calls every 5 minutes)
 3. Copy env vars from `.env.example` into Railway Variables (prefer copying Google OAuth vars from replyhandler).
 4. Keep it a cron/scheduled job, not an always-on web service.
 

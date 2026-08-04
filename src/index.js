@@ -7,7 +7,7 @@ import {
   loadState,
   saveState,
 } from './driveClient.js';
-import { transcribeAudio } from './openaiTranscribe.js';
+import { OpenAIQuotaError, transcribeAudio } from './openaiTranscribe.js';
 import { buildTranscriptDocx } from './docxBuilder.js';
 import {
   getAlreadyProcessedIds,
@@ -16,6 +16,7 @@ import {
   markError,
   markSkippedShort,
   markSkippedLong,
+  markSkippedBacklog,
 } from './stateStore.js';
 
 /** Default 120s — only transcribe calls longer than 2 minutes. */
@@ -32,12 +33,26 @@ function getMaxDurationSeconds() {
   return Number.isFinite(n) ? n : 1800;
 }
 
-/** Optional cap so a first cron run doesn't burn through the whole backlog. */
+/** Optional cap so one cron tick doesn't run forever. */
 function getMaxFilesPerRun() {
   const raw = process.env.MAX_FILES_PER_RUN;
   if (raw == null || raw === '') return Infinity;
   const n = Number(raw);
   return Number.isFinite(n) && n > 0 ? n : Infinity;
+}
+
+/**
+ * Only process recordings created at/after this ISO timestamp.
+ * Used so the cron watches new call drops instead of replaying history.
+ */
+function getProcessCreatedAfter() {
+  const raw = process.env.PROCESS_CREATED_AFTER?.trim();
+  if (!raw) return null;
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) {
+    throw new Error(`PROCESS_CREATED_AFTER is not a valid date: ${raw}`);
+  }
+  return d;
 }
 
 function getTranscriptsFolderId(recordingsFolderId) {
@@ -82,6 +97,7 @@ async function main() {
   const minDuration = getMinDurationSeconds();
   const maxDuration = getMaxDurationSeconds();
   const maxFilesPerRun = getMaxFilesPerRun();
+  const processCreatedAfter = getProcessCreatedAfter();
 
   const drive = createDriveClient();
   const recordingsFolderId = await resolveRecordingsFolderId(drive);
@@ -92,6 +108,9 @@ async function main() {
   console.log(
     `Duration window: >${minDuration}s and <${maxDuration}s`,
   );
+  if (processCreatedAfter) {
+    console.log(`Only new drops after: ${processCreatedAfter.toISOString()}`);
+  }
   if (Number.isFinite(maxFilesPerRun)) {
     console.log(`MAX_FILES_PER_RUN=${maxFilesPerRun}`);
   }
@@ -103,6 +122,13 @@ async function main() {
   let stateFileId = initialStateFileId;
 
   const recordings = await listRecordingsWithMetadata(drive, recordingsFolderId);
+  // Newest first — a just-dropped call should be transcribed before older backlog.
+  recordings.sort((a, b) => {
+    const at = new Date(a.createdTime || 0).getTime();
+    const bt = new Date(b.createdTime || 0).getTime();
+    return bt - at;
+  });
+
   const alreadyProcessed = getAlreadyProcessedIds(stateData);
 
   let newCount = 0;
@@ -110,8 +136,10 @@ async function main() {
   let errored = 0;
   let skippedShort = 0;
   let skippedLong = 0;
+  let skippedBacklog = 0;
   let stateDirty = false;
   let attempted = 0;
+  let stoppedForQuota = false;
 
   async function flushState() {
     stateFileId = await saveState(drive, recordingsFolderId, stateFileId, stateData);
@@ -124,6 +152,17 @@ async function main() {
     }
 
     newCount += 1;
+
+    if (
+      processCreatedAfter &&
+      (!recording.createdTime ||
+        new Date(recording.createdTime) < processCreatedAfter)
+    ) {
+      markSkippedBacklog(stateData, recording);
+      skippedBacklog += 1;
+      stateDirty = true;
+      continue;
+    }
 
     const duration = recording.durationSeconds;
     if (duration == null) {
@@ -161,7 +200,6 @@ async function main() {
 
     try {
       console.log(`Transcribing: ${recording.name} (${duration}s)`);
-      // Persist "transcribing" before the long OpenAI call so a crash mid-run won't double-process.
       markTranscribing(stateData, recording);
       stateDirty = true;
       await flushState();
@@ -175,9 +213,21 @@ async function main() {
       console.error(`Error processing ${recording.name}: ${err.message}`);
       markError(stateData, recording, err.message);
       stateDirty = true;
+
+      if (err instanceof OpenAIQuotaError) {
+        stoppedForQuota = true;
+        console.error(
+          'OpenAI credits exhausted — stopping this run. Add credits, then new call drops will resume.',
+        );
+        try {
+          await flushState();
+        } catch (saveErr) {
+          console.error(`Failed to save state file: ${saveErr.message}`);
+        }
+        break;
+      }
     }
 
-    // Save after each file so progress survives a later failure in the same run.
     if (stateDirty) {
       try {
         await flushState();
@@ -196,7 +246,7 @@ async function main() {
   }
 
   console.log(
-    `Summary: found=${recordings.length} new=${newCount} succeeded=${succeeded} errored=${errored} skipped_short=${skippedShort} skipped_long=${skippedLong}`,
+    `Summary: found=${recordings.length} new=${newCount} succeeded=${succeeded} errored=${errored} skipped_short=${skippedShort} skipped_long=${skippedLong} skipped_backlog=${skippedBacklog}${stoppedForQuota ? ' stopped_for_quota=1' : ''}`,
   );
 }
 
