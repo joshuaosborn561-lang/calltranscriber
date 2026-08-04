@@ -3,7 +3,12 @@
  * (persisted to Drive by driveClient.saveState — no Supabase / DB).
  */
 
-const SKIP_STATUSES = new Set(['done', 'skipped_short', 'transcribing']);
+const SKIP_STATUSES = new Set([
+  'done',
+  'skipped_short',
+  'skipped_long',
+  'transcribing',
+]);
 
 export function getAlreadyProcessedIds(stateData) {
   const ids = new Set();
@@ -60,6 +65,16 @@ export function markSkippedShort(stateData, recording) {
     file_name: recording.name,
     duration_seconds: recording.durationSeconds,
     status: 'skipped_short',
+    error: null,
+    completed_at: new Date().toISOString(),
+  });
+}
+
+export function markSkippedLong(stateData, recording) {
+  return setFileState(stateData, recording.id, {
+    file_name: recording.name,
+    duration_seconds: recording.durationSeconds,
+    status: 'skipped_long',
     error: null,
     completed_at: new Date().toISOString(),
   });

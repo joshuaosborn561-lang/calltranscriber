@@ -15,12 +15,21 @@ import {
   markDone,
   markError,
   markSkippedShort,
+  markSkippedLong,
 } from './stateStore.js';
 
+/** Default 120s — only transcribe calls longer than 2 minutes. */
 function getMinDurationSeconds() {
   const raw = process.env.MIN_DURATION_SECONDS;
-  const n = raw == null || raw === '' ? 15 : Number(raw);
-  return Number.isFinite(n) ? n : 15;
+  const n = raw == null || raw === '' ? 120 : Number(raw);
+  return Number.isFinite(n) ? n : 120;
+}
+
+/** Default 1800s — skip calls 30 minutes or longer. */
+function getMaxDurationSeconds() {
+  const raw = process.env.MAX_DURATION_SECONDS;
+  const n = raw == null || raw === '' ? 1800 : Number(raw);
+  return Number.isFinite(n) ? n : 1800;
 }
 
 /** Optional cap so a first cron run doesn't burn through the whole backlog. */
@@ -71,6 +80,7 @@ async function processRecording(drive, recording, transcriptsFolderId, stateData
 
 async function main() {
   const minDuration = getMinDurationSeconds();
+  const maxDuration = getMaxDurationSeconds();
   const maxFilesPerRun = getMaxFilesPerRun();
 
   const drive = createDriveClient();
@@ -79,6 +89,9 @@ async function main() {
 
   console.log(`Recordings folder: ${recordingsFolderId}`);
   console.log(`Transcripts folder: ${transcriptsFolderId}`);
+  console.log(
+    `Duration window: >${minDuration}s and <${maxDuration}s`,
+  );
   if (Number.isFinite(maxFilesPerRun)) {
     console.log(`MAX_FILES_PER_RUN=${maxFilesPerRun}`);
   }
@@ -96,6 +109,7 @@ async function main() {
   let succeeded = 0;
   let errored = 0;
   let skippedShort = 0;
+  let skippedLong = 0;
   let stateDirty = false;
   let attempted = 0;
 
@@ -111,11 +125,6 @@ async function main() {
 
     newCount += 1;
 
-    if (attempted >= maxFilesPerRun) {
-      continue;
-    }
-    attempted += 1;
-
     const duration = recording.durationSeconds;
     if (duration == null) {
       const message = recording.sidecarMissing
@@ -128,13 +137,27 @@ async function main() {
       continue;
     }
 
-    if (duration < minDuration) {
+    // longer than 2 min, shorter than 30 min (defaults)
+    if (duration <= minDuration) {
       markSkippedShort(stateData, recording);
       skippedShort += 1;
       stateDirty = true;
       console.log(`Skipped short: ${recording.name} (duration=${duration}s)`);
       continue;
     }
+
+    if (duration >= maxDuration) {
+      markSkippedLong(stateData, recording);
+      skippedLong += 1;
+      stateDirty = true;
+      console.log(`Skipped long: ${recording.name} (duration=${duration}s)`);
+      continue;
+    }
+
+    if (attempted >= maxFilesPerRun) {
+      continue;
+    }
+    attempted += 1;
 
     try {
       console.log(`Transcribing: ${recording.name} (${duration}s)`);
@@ -173,7 +196,7 @@ async function main() {
   }
 
   console.log(
-    `Summary: found=${recordings.length} new=${newCount} succeeded=${succeeded} errored=${errored} skipped_short=${skippedShort}`,
+    `Summary: found=${recordings.length} new=${newCount} succeeded=${succeeded} errored=${errored} skipped_short=${skippedShort} skipped_long=${skippedLong}`,
   );
 }
 

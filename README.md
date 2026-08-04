@@ -52,11 +52,11 @@ Each recording needs a sidecar JSON with the **same base name** in the same fold
 }
 ```
 
-`duration` is **milliseconds**. Recordings shorter than `MIN_DURATION_SECONDS` (default `15`) are skipped.
+`duration` is **milliseconds**. Only calls **longer than 2 minutes** and **shorter than 30 minutes** are transcribed (`MIN_DURATION_SECONDS=120`, `MAX_DURATION_SECONDS=1800`).
 
 ## 4. State file (no database)
 
-Progress is stored in Drive as `.call-transcriber-state.json` inside the recordings root. Statuses: `pending`-like absence, `transcribing`, `done`, `error`, `skipped_short`. Files in `done`, `skipped_short`, or `transcribing` are not reprocessed.
+Progress is stored in Drive as `.call-transcriber-state.json` inside the recordings root. Statuses: `transcribing`, `done`, `error`, `skipped_short`, `skipped_long`. Files in `done`, `skipped_short`, `skipped_long`, or `transcribing` are not reprocessed.
 
 ## 5. Local run
 
