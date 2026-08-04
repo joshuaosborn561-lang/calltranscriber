@@ -8,20 +8,30 @@ const STATE_FILE_NAME = '.call-transcriber-state.json';
  * Create an authenticated Drive client.
  *
  * Preferred (OAuth, same style as replyhandler):
- *   GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN
+ *   GOOGLE_CLIENT_ID / GMAIL_CLIENT_ID
+ *   GOOGLE_CLIENT_SECRET / GMAIL_CLIENT_SECRET
+ *   GOOGLE_REFRESH_TOKEN
  *
  * Fallback (service account JSON blob):
  *   GOOGLE_SERVICE_ACCOUNT_JSON
  */
 export function createDriveClient() {
   const refreshToken = process.env.GOOGLE_REFRESH_TOKEN?.trim();
-  const clientId = process.env.GOOGLE_CLIENT_ID?.trim();
-  const clientSecret = process.env.GOOGLE_CLIENT_SECRET?.trim();
+  const clientId = (
+    process.env.GOOGLE_CLIENT_ID ||
+    process.env.GMAIL_CLIENT_ID ||
+    ''
+  ).trim();
+  const clientSecret = (
+    process.env.GOOGLE_CLIENT_SECRET ||
+    process.env.GMAIL_CLIENT_SECRET ||
+    ''
+  ).trim();
 
   if (refreshToken) {
     if (!clientId || !clientSecret) {
       throw new Error(
-        'GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are required with GOOGLE_REFRESH_TOKEN',
+        'GOOGLE_CLIENT_ID (or GMAIL_CLIENT_ID) and matching CLIENT_SECRET are required with GOOGLE_REFRESH_TOKEN',
       );
     }
     const oauth2 = new google.auth.OAuth2(clientId, clientSecret);
@@ -77,7 +87,11 @@ function baseName(name) {
  * (default "Cube ACR").
  */
 export async function resolveRecordingsFolderId(drive) {
-  const explicit = process.env.DRIVE_RECORDINGS_FOLDER_ID?.trim();
+  const explicit = (
+    process.env.DRIVE_RECORDINGS_FOLDER_ID ||
+    process.env.CUBE_ACR_DRIVE_FOLDER_ID ||
+    ''
+  ).trim();
   if (explicit) return explicit;
 
   const name = (process.env.DRIVE_RECORDINGS_FOLDER_NAME || 'Cube ACR').trim();
