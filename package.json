@@ -1,0 +1,17 @@
+{
+  "name": "call-transcriber",
+  "version": "1.0.0",
+  "description": "Railway cron job that transcribes Google Drive call recordings with OpenAI and uploads .docx transcripts",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.49.1",
+    "docx": "^9.2.0",
+    "googleapis": "^144.0.0"
+  }
+}
