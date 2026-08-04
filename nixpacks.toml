@@ -1,0 +1,3 @@
+# ffmpeg converts Cube ACR .amr recordings to mp3 for OpenAI transcription
+[phases.setup]
+aptPkgs = ["ffmpeg"]

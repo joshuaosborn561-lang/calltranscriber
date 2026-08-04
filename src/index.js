@@ -8,6 +8,7 @@ import {
   saveState,
 } from './driveClient.js';
 import { OpenAIQuotaError, transcribeAudio } from './openaiTranscribe.js';
+import { ensureOpenAiAudio } from './audioConvert.js';
 import { buildTranscriptDocx } from './docxBuilder.js';
 import {
   getAlreadyProcessedIds,
@@ -69,7 +70,11 @@ function transcriptFileName(recordingName) {
 
 async function processRecording(drive, recording, transcriptsFolderId, stateData) {
   const audioBuffer = await downloadFileBuffer(drive, recording.id);
-  const transcriptText = await transcribeAudio(recording.name, audioBuffer);
+  const prepared = await ensureOpenAiAudio(recording.name, audioBuffer);
+  if (prepared.converted) {
+    console.log(`Converted ${recording.name} → ${prepared.fileName} for OpenAI`);
+  }
+  const transcriptText = await transcribeAudio(prepared.fileName, prepared.buffer);
 
   const docxBuffer = await buildTranscriptDocx(
     {

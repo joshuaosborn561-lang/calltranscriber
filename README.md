@@ -7,6 +7,7 @@ Processed-file tracking is a small JSON file in Drive (`.call-transcriber-state.
 ## Prerequisites
 
 - Node.js 20+
+- **ffmpeg** (converts Cube ACR `.amr` → `.mp3`; OpenAI does not accept AMR)
 - Google OAuth client + refresh token with Drive access (or a service account)
 - An OpenAI API key
 - A Railway account (for scheduled runs)
