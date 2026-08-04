@@ -1,18 +1,21 @@
 import {
   createDriveClient,
+  resolveRecordingsFolderId,
   listRecordingsWithMetadata,
   downloadFileBuffer,
   uploadDocx,
+  loadState,
+  saveState,
 } from './driveClient.js';
 import { transcribeAudio } from './openaiTranscribe.js';
 import { buildTranscriptDocx } from './docxBuilder.js';
 import {
-  createSupabaseClient,
-  getAlreadyProcessedDriveFileIds,
-  upsertTranscriptionRow,
+  getAlreadyProcessedIds,
+  markTranscribing,
   markDone,
+  markError,
   markSkippedShort,
-} from './supabaseClient.js';
+} from './stateStore.js';
 
 function getMinDurationSeconds() {
   const raw = process.env.MIN_DURATION_SECONDS;
@@ -20,10 +23,10 @@ function getMinDurationSeconds() {
   return Number.isFinite(n) ? n : 15;
 }
 
-function getTranscriptsFolderId() {
+function getTranscriptsFolderId(recordingsFolderId) {
   const transcripts = process.env.DRIVE_TRANSCRIPTS_FOLDER_ID;
   if (transcripts && transcripts.trim()) return transcripts.trim();
-  return process.env.DRIVE_RECORDINGS_FOLDER_ID;
+  return recordingsFolderId;
 }
 
 function transcriptFileName(recordingName) {
@@ -32,14 +35,7 @@ function transcriptFileName(recordingName) {
   return `${base} - transcript.docx`;
 }
 
-async function processRecording(drive, supabase, recording, transcriptsFolderId) {
-  await upsertTranscriptionRow(supabase, {
-    drive_file_id: recording.id,
-    file_name: recording.name,
-    duration_seconds: recording.durationSeconds,
-    status: 'transcribing',
-  });
-
+async function processRecording(drive, recording, transcriptsFolderId, stateData) {
   const audioBuffer = await downloadFileBuffer(drive, recording.id);
   const transcriptText = await transcribeAudio(recording.name, audioBuffer);
 
@@ -61,41 +57,39 @@ async function processRecording(drive, supabase, recording, transcriptsFolderId)
     docxBuffer,
   );
 
-  await markDone(supabase, recording.id, docxFileId);
+  markDone(stateData, recording, docxFileId);
   return docxFileId;
 }
 
-async function persistError(supabase, recording, message) {
-  // Upsert so this works even when no row exists yet (e.g. bad sidecar).
-  await upsertTranscriptionRow(supabase, {
-    drive_file_id: recording.id,
-    file_name: recording.name,
-    duration_seconds: recording.durationSeconds,
-    status: 'error',
-    error: String(message).slice(0, 4000),
-    completed_at: new Date().toISOString(),
-  });
-}
-
 async function main() {
-  const recordingsFolderId = process.env.DRIVE_RECORDINGS_FOLDER_ID;
-  if (!recordingsFolderId) {
-    throw new Error('DRIVE_RECORDINGS_FOLDER_ID is required');
-  }
-
   const minDuration = getMinDurationSeconds();
-  const transcriptsFolderId = getTranscriptsFolderId();
 
   const drive = createDriveClient();
-  const supabase = createSupabaseClient();
+  const recordingsFolderId = await resolveRecordingsFolderId(drive);
+  const transcriptsFolderId = getTranscriptsFolderId(recordingsFolderId);
+
+  console.log(`Recordings folder: ${recordingsFolderId}`);
+  console.log(`Transcripts folder: ${transcriptsFolderId}`);
+
+  const { fileId: initialStateFileId, data: stateData } = await loadState(
+    drive,
+    recordingsFolderId,
+  );
+  let stateFileId = initialStateFileId;
 
   const recordings = await listRecordingsWithMetadata(drive, recordingsFolderId);
-  const alreadyProcessed = await getAlreadyProcessedDriveFileIds(supabase);
+  const alreadyProcessed = getAlreadyProcessedIds(stateData);
 
   let newCount = 0;
   let succeeded = 0;
   let errored = 0;
   let skippedShort = 0;
+  let stateDirty = false;
+
+  async function flushState() {
+    stateFileId = await saveState(drive, recordingsFolderId, stateFileId, stateData);
+    stateDirty = false;
+  }
 
   for (const recording of recordings) {
     if (alreadyProcessed.has(recording.id)) {
@@ -111,47 +105,52 @@ async function main() {
         : 'Sidecar duration missing or invalid';
       errored += 1;
       console.error(`Error processing ${recording.name}: ${message}`);
-      try {
-        await persistError(supabase, recording, message);
-      } catch (persistErr) {
-        console.error(
-          `Failed to persist error status for ${recording.name}: ${persistErr.message}`,
-        );
-      }
+      markError(stateData, recording, message);
+      stateDirty = true;
       continue;
     }
 
     if (duration < minDuration) {
-      try {
-        await markSkippedShort(supabase, recording);
-        skippedShort += 1;
-        console.log(
-          `Skipped short: ${recording.name} (duration=${duration}s)`,
-        );
-      } catch (err) {
-        errored += 1;
-        console.error(
-          `Failed to mark skipped_short for ${recording.name}: ${err.message}`,
-        );
-      }
+      markSkippedShort(stateData, recording);
+      skippedShort += 1;
+      stateDirty = true;
+      console.log(`Skipped short: ${recording.name} (duration=${duration}s)`);
       continue;
     }
 
     try {
       console.log(`Transcribing: ${recording.name} (${duration}s)`);
-      await processRecording(drive, supabase, recording, transcriptsFolderId);
+      // Persist "transcribing" before the long OpenAI call so a crash mid-run won't double-process.
+      markTranscribing(stateData, recording);
+      stateDirty = true;
+      await flushState();
+
+      await processRecording(drive, recording, transcriptsFolderId, stateData);
       succeeded += 1;
+      stateDirty = true;
       console.log(`Done: ${recording.name}`);
     } catch (err) {
       errored += 1;
       console.error(`Error processing ${recording.name}: ${err.message}`);
+      markError(stateData, recording, err.message);
+      stateDirty = true;
+    }
+
+    // Save after each file so progress survives a later failure in the same run.
+    if (stateDirty) {
       try {
-        await persistError(supabase, recording, err.message);
-      } catch (persistErr) {
-        console.error(
-          `Failed to persist error status for ${recording.name}: ${persistErr.message}`,
-        );
+        await flushState();
+      } catch (saveErr) {
+        console.error(`Failed to save state file: ${saveErr.message}`);
       }
+    }
+  }
+
+  if (stateDirty) {
+    try {
+      await flushState();
+    } catch (saveErr) {
+      console.error(`Failed to save final state file: ${saveErr.message}`);
     }
   }
 

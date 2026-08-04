@@ -1,54 +1,48 @@
 # call-transcriber
 
-Node.js (ESM) Railway **cron job** that watches a Google Drive folder for call recordings (default `.amr`), skips short misdials, transcribes new files with OpenAI (`gpt-4o-mini-transcribe`), builds a `.docx` transcript, uploads it back to Drive, and records progress in Supabase so re-runs never reprocess the same file.
+Node.js (ESM) Railway **cron job** that watches a Google Drive folder (default **Cube ACR**, including date subfolders) for call recordings, skips short misdials, transcribes new files with OpenAI, and uploads `.docx` transcripts back to Drive.
+
+Processed-file tracking is a small JSON file in Drive (`.call-transcriber-state.json`) — no database.
 
 ## Prerequisites
 
 - Node.js 20+
-- A Google Cloud service account with Drive access to your folders
-- A Supabase project
+- Google OAuth client + refresh token with Drive access (or a service account)
 - An OpenAI API key
 - A Railway account (for scheduled runs)
 
-## 1. Google Cloud service account + Drive sharing
+## 1. Google Drive auth (OAuth refresh token)
 
-Personal Gmail Drive files are **not** visible to service accounts unless you explicitly share the folder.
+This matches how apps like replyhandler typically talk to personal Drive.
 
-1. In [Google Cloud Console](https://console.cloud.google.com/), create or select a project.
-2. Enable the **Google Drive API**.
-3. Create a **Service Account** (IAM & Admin → Service Accounts).
-4. Create a JSON key for that service account and download it.
-5. Copy the entire JSON contents into the `GOOGLE_SERVICE_ACCOUNT_JSON` env var (as a string).
-6. Note the service account email (e.g. `call-transcriber@my-project.iam.gserviceaccount.com`).
-7. In Google Drive, share both the **recordings** folder and the **transcripts** folder with that email as **Editor**.
+You need three values from a Google Cloud OAuth **Desktop** or **Web** client that already has Drive consent:
 
-Set:
+| Env var | What it is |
+| --- | --- |
+| `GOOGLE_CLIENT_ID` | OAuth client ID |
+| `GOOGLE_CLIENT_SECRET` | OAuth client secret |
+| `GOOGLE_REFRESH_TOKEN` | Long-lived refresh token (paste once) |
 
-- `DRIVE_RECORDINGS_FOLDER_ID` — folder ID from the Drive URL (`.../folders/<ID>`)
-- `DRIVE_TRANSCRIPTS_FOLDER_ID` — optional; if blank, transcripts go into the recordings folder
+A short-lived **access** token is not enough for a cron job — it expires in ~1 hour. Use a **refresh** token.
 
-## 2. Supabase schema
+If you already authorized Drive for replyhandler on Railway, copy those three vars from that service’s Variables panel.
 
-1. Create a Supabase project at [supabase.com](https://supabase.com).
-2. Open the SQL Editor and run [`supabase_schema.sql`](./supabase_schema.sql).
-3. Set env vars:
-   - `SUPABASE_URL` — Project Settings → API → Project URL
-   - `SUPABASE_SERVICE_ROLE_KEY` — Project Settings → API → `service_role` key (server-only)
+**Folder:** recordings live under **Cube ACR** (override with `DRIVE_RECORDINGS_FOLDER_NAME` or set `DRIVE_RECORDINGS_FOLDER_ID`). Date subfolders are scanned recursively.
 
-## 3. OpenAI API key
+Optional: `DRIVE_TRANSCRIPTS_FOLDER_ID` — if blank, transcripts upload into the Cube ACR root.
+
+## 2. OpenAI API key
 
 1. Create a key at [platform.openai.com](https://platform.openai.com/api-keys).
 2. Set `OPENAI_API_KEY`.
 
-## 4. Recording sidecars
+## 3. Recording sidecars
 
-Each recording must have a sidecar JSON file with the **same base name**:
+Each recording needs a sidecar JSON with the **same base name** in the same folder:
 
-| Recording     | Sidecar     |
-| ------------- | ----------- |
-| `call.amr`    | `call.json` |
-
-Sidecar shape:
+| Recording  | Sidecar    |
+| ---------- | ---------- |
+| `call.amr` | `call.json` |
 
 ```json
 {
@@ -58,53 +52,40 @@ Sidecar shape:
 }
 ```
 
-`duration` is in **milliseconds**. Recordings shorter than `MIN_DURATION_SECONDS` (default `15`) are marked `skipped_short` and not transcribed.
+`duration` is **milliseconds**. Recordings shorter than `MIN_DURATION_SECONDS` (default `15`) are skipped.
 
-Optional: `RECORDING_EXTENSIONS` — comma-separated list without dots (default `amr`).
+## 4. State file (no database)
+
+Progress is stored in Drive as `.call-transcriber-state.json` inside the recordings root. Statuses: `pending`-like absence, `transcribing`, `done`, `error`, `skipped_short`. Files in `done`, `skipped_short`, or `transcribing` are not reprocessed.
 
 ## 5. Local run
 
 ```bash
 cp .env.example .env
-# fill in .env values
+# fill in .env
 npm install
 npm start
 ```
 
 ## 6. Deploy to Railway as a Cron Job
 
-This app is a **one-shot job**, not a long-running web service. Configure it as a Railway **Cron Job**.
-
-1. Create a new Railway project and deploy this repo (GitHub or `railway up`).
-2. In the service settings:
+1. Deploy this repo to Railway.
+2. Service settings:
    - **Start Command:** `npm start`
-   - **Cron Schedule:** e.g. `*/30 * * * *` (every 30 minutes)
-3. Add all variables from [`.env.example`](./.env.example) in the Railway Variables UI.
-4. Ensure the service is a cron/scheduled job (not a always-on web service with a public port). The process should exit after printing the summary line.
-
-Suggested schedule: every 30 minutes is a good balance between freshness and API cost.
-
-## How a run works
-
-1. Authenticate to Drive with the service account (`drive` scope).
-2. List files in `DRIVE_RECORDINGS_FOLDER_ID` matching configured extensions.
-3. Pair each recording with its sidecar `.json` for duration / callee / direction.
-4. Query Supabase for `drive_file_id` values already in `done`, `skipped_short`, or `transcribing` and skip them.
-5. Skip (and record as `skipped_short`) anything under `MIN_DURATION_SECONDS`.
-6. Download audio → OpenAI transcription → build `.docx` → upload to Drive → mark `done`.
-7. Per-file errors are caught; other files continue. Final log line summarizes counts.
+   - **Cron Schedule:** e.g. `*/30 * * * *`
+3. Copy env vars from `.env.example` into Railway Variables (prefer copying Google OAuth vars from replyhandler).
+4. Keep it a cron/scheduled job, not an always-on web service.
 
 ## Project layout
 
 ```
 package.json
 .env.example
-supabase_schema.sql
 README.md
 src/
-  index.js            # entry point (npm start)
-  driveClient.js      # Drive auth, list, download, upload
-  openaiTranscribe.js # OpenAI multipart transcription
-  docxBuilder.js      # .docx buffer from metadata + text
-  supabaseClient.js   # dedupe / status tracking
+  index.js            # entry point
+  driveClient.js      # OAuth/Drive, recursive list, state file, upload
+  stateStore.js       # in-memory status helpers (persisted to Drive JSON)
+  openaiTranscribe.js
+  docxBuilder.js
 ```
