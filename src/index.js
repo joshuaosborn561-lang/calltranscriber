@@ -12,6 +12,7 @@ import { ensureOpenAiAudio } from './audioConvert.js';
 import { buildTranscriptDocx } from './docxBuilder.js';
 import {
   getAlreadyProcessedIds,
+  clearBacklogSkips,
   markTranscribing,
   markDone,
   markError,
@@ -43,17 +44,31 @@ function getMaxFilesPerRun() {
 }
 
 /**
- * Only process recordings created at/after this ISO timestamp.
- * Used so the cron watches new call drops instead of replaying history.
+ * Rolling lookback window. Default: last 3 days.
+ * Optional PROCESS_CREATED_AFTER can raise the floor further.
  */
 function getProcessCreatedAfter() {
+  const lookbackRaw = process.env.LOOKBACK_DAYS;
+  const lookbackDays =
+    lookbackRaw == null || lookbackRaw === ''
+      ? 3
+      : Number(lookbackRaw);
+  const lookbackMs =
+    Number.isFinite(lookbackDays) && lookbackDays > 0
+      ? lookbackDays * 24 * 60 * 60 * 1000
+      : 3 * 24 * 60 * 60 * 1000;
+  let cutoff = new Date(Date.now() - lookbackMs);
+
   const raw = process.env.PROCESS_CREATED_AFTER?.trim();
-  if (!raw) return null;
-  const d = new Date(raw);
-  if (Number.isNaN(d.getTime())) {
-    throw new Error(`PROCESS_CREATED_AFTER is not a valid date: ${raw}`);
+  if (raw) {
+    const absolute = new Date(raw);
+    if (Number.isNaN(absolute.getTime())) {
+      throw new Error(`PROCESS_CREATED_AFTER is not a valid date: ${raw}`);
+    }
+    if (absolute > cutoff) cutoff = absolute;
   }
-  return d;
+
+  return cutoff;
 }
 
 function getTranscriptsFolderId(recordingsFolderId) {
@@ -113,9 +128,7 @@ async function main() {
   console.log(
     `Duration window: >${minDuration}s and <${maxDuration}s`,
   );
-  if (processCreatedAfter) {
-    console.log(`Only new drops after: ${processCreatedAfter.toISOString()}`);
-  }
+  console.log(`Backfill window: after ${processCreatedAfter.toISOString()} (LOOKBACK_DAYS)`);
   if (Number.isFinite(maxFilesPerRun)) {
     console.log(`MAX_FILES_PER_RUN=${maxFilesPerRun}`);
   }
@@ -133,6 +146,19 @@ async function main() {
     const bt = new Date(b.createdTime || 0).getTime();
     return bt - at;
   });
+
+  // Re-open anything previously marked skipped_backlog that now falls inside the window.
+  const inWindowIds = recordings
+    .filter(
+      (r) =>
+        r.createdTime && new Date(r.createdTime) >= processCreatedAfter,
+    )
+    .map((r) => r.id);
+  const cleared = clearBacklogSkips(stateData, inWindowIds);
+  if (cleared > 0) {
+    console.log(`Reopened ${cleared} previously skipped_backlog file(s) in lookback window`);
+    stateFileId = await saveState(drive, recordingsFolderId, stateFileId, stateData);
+  }
 
   const alreadyProcessed = getAlreadyProcessedIds(stateData);
 
@@ -159,9 +185,8 @@ async function main() {
     newCount += 1;
 
     if (
-      processCreatedAfter &&
-      (!recording.createdTime ||
-        new Date(recording.createdTime) < processCreatedAfter)
+      !recording.createdTime ||
+      new Date(recording.createdTime) < processCreatedAfter
     ) {
       markSkippedBacklog(stateData, recording);
       skippedBacklog += 1;

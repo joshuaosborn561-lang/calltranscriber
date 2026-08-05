@@ -55,7 +55,7 @@ Each recording needs a sidecar JSON with the **same base name** in the same fold
 
 `duration` is **milliseconds**. Only calls **longer than 2 minutes** and **shorter than 30 minutes** are transcribed (`MIN_DURATION_SECONDS=120`, `MAX_DURATION_SECONDS=1800`).
 
-Set `PROCESS_CREATED_AFTER` (ISO timestamp) so the cron only watches **new call drops** after that time instead of replaying the whole Cube ACR history. Newest recordings are processed first.
+By default the cron only backfills / watches the **last 3 days** (`LOOKBACK_DAYS=3`). Older Cube ACR history is skipped. Newest recordings are processed first.
 
 ## 4. State file (no database)
 

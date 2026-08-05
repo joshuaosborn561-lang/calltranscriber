@@ -7,7 +7,8 @@ const SKIP_STATUSES = new Set([
   'done',
   'skipped_short',
   'skipped_long',
-  'skipped_backlog',
+  // skipped_backlog is NOT permanent — a rolling LOOKBACK_DAYS window can reopen
+  // older files when the lookback expands.
   // "transcribing" is intentionally NOT skipped forever — a crashed run can leave
   // that status; the next cron should retry it.
 ]);
@@ -20,6 +21,19 @@ export function getAlreadyProcessedIds(stateData) {
     }
   }
   return ids;
+}
+
+/** Clear skipped_backlog so files inside the current lookback can be transcribed. */
+export function clearBacklogSkips(stateData, driveFileIds) {
+  let cleared = 0;
+  for (const id of driveFileIds) {
+    const row = stateData.files?.[id];
+    if (row?.status === 'skipped_backlog') {
+      delete stateData.files[id];
+      cleared += 1;
+    }
+  }
+  return cleared;
 }
 
 export function setFileState(stateData, driveFileId, patch) {
