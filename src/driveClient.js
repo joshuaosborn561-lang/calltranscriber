@@ -253,6 +253,35 @@ export async function uploadDocx(drive, folderId, fileName, buffer) {
 }
 
 /**
+ * Move a Drive file into targetFolderId (removes other parents).
+ */
+export async function moveFileToFolder(drive, fileId, targetFolderId) {
+  if (!fileId || !targetFolderId) {
+    throw new Error('fileId and targetFolderId are required to move a file');
+  }
+
+  const meta = await drive.files.get({
+    fileId,
+    fields: 'id, parents',
+    supportsAllDrives: true,
+  });
+  const parents = meta.data.parents || [];
+  if (parents.includes(targetFolderId) && parents.length === 1) {
+    return fileId;
+  }
+
+  const previous = parents.filter((p) => p !== targetFolderId).join(',');
+  await drive.files.update({
+    fileId,
+    addParents: targetFolderId,
+    removeParents: previous || undefined,
+    fields: 'id, parents',
+    supportsAllDrives: true,
+  });
+  return fileId;
+}
+
+/**
  * Load processed-file state from a small JSON file in Drive (no database).
  * Shape: { files: { [driveFileId]: { status, fileName, ... } } }
  */

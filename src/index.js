@@ -4,6 +4,7 @@ import {
   listRecordingsWithMetadata,
   downloadFileBuffer,
   uploadDocx,
+  moveFileToFolder,
   loadState,
   saveState,
 } from './driveClient.js';
@@ -71,10 +72,15 @@ function getProcessCreatedAfter() {
   return cutoff;
 }
 
-function getTranscriptsFolderId(recordingsFolderId) {
-  const transcripts = process.env.DRIVE_TRANSCRIPTS_FOLDER_ID;
-  if (transcripts && transcripts.trim()) return transcripts.trim();
-  return recordingsFolderId;
+/**
+ * Where to put the transcript.
+ * Default: same Drive folder as the recording (the date subfolder).
+ * Override with DRIVE_TRANSCRIPTS_FOLDER_ID only if you want a single dump folder.
+ */
+function resolveTranscriptFolderId(recording, recordingsFolderId) {
+  const override = process.env.DRIVE_TRANSCRIPTS_FOLDER_ID?.trim();
+  if (override) return override;
+  return recording.parentId || recordingsFolderId;
 }
 
 function transcriptFileName(recordingName) {
@@ -83,7 +89,7 @@ function transcriptFileName(recordingName) {
   return `${base} - transcript.docx`;
 }
 
-async function processRecording(drive, recording, transcriptsFolderId, stateData) {
+async function processRecording(drive, recording, recordingsFolderId, stateData) {
   const audioBuffer = await downloadFileBuffer(drive, recording.id);
   const prepared = await ensureOpenAiAudio(recording.name, audioBuffer);
   if (prepared.converted) {
@@ -102,15 +108,59 @@ async function processRecording(drive, recording, transcriptsFolderId, stateData
     transcriptText,
   );
 
+  const folderId = resolveTranscriptFolderId(recording, recordingsFolderId);
   const docxFileId = await uploadDocx(
     drive,
-    transcriptsFolderId,
+    folderId,
     transcriptFileName(recording.name),
     docxBuffer,
   );
 
   markDone(stateData, recording, docxFileId);
   return docxFileId;
+}
+
+/** Move already-done transcripts into the same folder as their recording. */
+async function colocateExistingTranscripts(drive, recordings, stateData, recordingsFolderId) {
+  if (process.env.DRIVE_TRANSCRIPTS_FOLDER_ID?.trim()) {
+    return 0;
+  }
+
+  const byId = new Map(recordings.map((r) => [r.id, r]));
+  let moved = 0;
+
+  for (const [driveFileId, row] of Object.entries(stateData.files || {})) {
+    if (row.status !== 'done' || !row.transcript_docx_file_id) continue;
+    const recording = byId.get(driveFileId);
+    if (!recording?.parentId) continue;
+
+    try {
+      const meta = await drive.files.get({
+        fileId: row.transcript_docx_file_id,
+        fields: 'id, parents, trashed',
+        supportsAllDrives: true,
+      });
+      if (meta.data.trashed) continue;
+      const parents = meta.data.parents || [];
+      if (parents.includes(recording.parentId)) continue;
+
+      await moveFileToFolder(
+        drive,
+        row.transcript_docx_file_id,
+        recording.parentId,
+      );
+      moved += 1;
+      console.log(
+        `Moved transcript next to recording: ${row.file_name || driveFileId}`,
+      );
+    } catch (err) {
+      console.warn(
+        `Could not move transcript for ${row.file_name || driveFileId}: ${err.message}`,
+      );
+    }
+  }
+
+  return moved;
 }
 
 async function main() {
@@ -121,10 +171,13 @@ async function main() {
 
   const drive = createDriveClient();
   const recordingsFolderId = await resolveRecordingsFolderId(drive);
-  const transcriptsFolderId = getTranscriptsFolderId(recordingsFolderId);
 
   console.log(`Recordings folder: ${recordingsFolderId}`);
-  console.log(`Transcripts folder: ${transcriptsFolderId}`);
+  console.log(
+    process.env.DRIVE_TRANSCRIPTS_FOLDER_ID?.trim()
+      ? `Transcripts folder override: ${process.env.DRIVE_TRANSCRIPTS_FOLDER_ID.trim()}`
+      : 'Transcripts folder: same folder as each recording',
+  );
   console.log(
     `Duration window: >${minDuration}s and <${maxDuration}s`,
   );
@@ -146,6 +199,16 @@ async function main() {
     const bt = new Date(b.createdTime || 0).getTime();
     return bt - at;
   });
+
+  const moved = await colocateExistingTranscripts(
+    drive,
+    recordings,
+    stateData,
+    recordingsFolderId,
+  );
+  if (moved > 0) {
+    console.log(`Colocated ${moved} existing transcript(s) with their recordings`);
+  }
 
   // Re-open anything previously marked skipped_backlog that now falls inside the window.
   const inWindowIds = recordings
@@ -234,7 +297,7 @@ async function main() {
       stateDirty = true;
       await flushState();
 
-      await processRecording(drive, recording, transcriptsFolderId, stateData);
+      await processRecording(drive, recording, recordingsFolderId, stateData);
       succeeded += 1;
       stateDirty = true;
       console.log(`Done: ${recording.name}`);

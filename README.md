@@ -30,7 +30,7 @@ If you already authorized Drive for replyhandler on Railway, copy those three va
 
 **Folder:** recordings live under **Cube ACR** (override with `DRIVE_RECORDINGS_FOLDER_NAME` or set `DRIVE_RECORDINGS_FOLDER_ID`). Date subfolders are scanned recursively.
 
-Optional: `DRIVE_TRANSCRIPTS_FOLDER_ID` — if blank, transcripts upload into the Cube ACR root.
+By default each transcript `.docx` is uploaded into the **same date subfolder as the recording**. Set `DRIVE_TRANSCRIPTS_FOLDER_ID` only if you want a single dump folder instead.
 
 ## 2. OpenAI API key
 
