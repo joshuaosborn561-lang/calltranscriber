@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { readFile, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rm, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -65,6 +65,60 @@ export async function ensureOpenAiAudio(fileName, audioBuffer) {
     return { buffer, fileName: outName, converted: true };
   } finally {
     await Promise.allSettled([unlink(inPath), unlink(outPath)]);
+  }
+}
+
+/**
+ * Split an mp3 buffer into ~chunkSeconds pieces for long-call transcription.
+ * @returns {Promise<Array<{ buffer: Buffer, fileName: string }>>}
+ */
+export async function splitMp3IntoChunks(
+  mp3Buffer,
+  baseFileName,
+  chunkSeconds = 600,
+) {
+  const id = randomUUID();
+  const dir = join(tmpdir(), `chunks-${id}`);
+  const inPath = join(dir, 'input.mp3');
+  await mkdir(dir, { recursive: true });
+  await writeFile(inPath, mp3Buffer);
+
+  const pattern = join(dir, 'chunk_%03d.mp3');
+  try {
+    await runFfmpeg([
+      '-y',
+      '-i',
+      inPath,
+      '-f',
+      'segment',
+      '-segment_time',
+      String(chunkSeconds),
+      '-reset_timestamps',
+      '1',
+      '-c',
+      'copy',
+      pattern,
+    ]);
+
+    const names = (await readdir(dir))
+      .filter((n) => n.startsWith('chunk_') && n.endsWith('.mp3'))
+      .sort();
+    if (names.length === 0) {
+      throw new Error('ffmpeg produced no audio chunks');
+    }
+
+    const stem = baseName(baseFileName);
+    const chunks = [];
+    for (let i = 0; i < names.length; i += 1) {
+      const buffer = await readFile(join(dir, names[i]));
+      chunks.push({
+        buffer,
+        fileName: `${stem}.part${String(i + 1).padStart(2, '0')}.mp3`,
+      });
+    }
+    return chunks;
+  } finally {
+    await rm(dir, { recursive: true, force: true });
   }
 }
 

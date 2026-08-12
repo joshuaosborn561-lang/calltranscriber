@@ -36,12 +36,27 @@ function getMaxDurationSeconds() {
   return Number.isFinite(n) ? n : 1800;
 }
 
-/** Optional cap so one cron tick doesn't run forever. */
+/** Optional cap so one poll cycle doesn't run forever. */
 function getMaxFilesPerRun() {
   const raw = process.env.MAX_FILES_PER_RUN;
   if (raw == null || raw === '') return Infinity;
   const n = Number(raw);
   return Number.isFinite(n) && n > 0 ? n : Infinity;
+}
+
+/**
+ * Continuous poll interval in seconds. Default 30 (target ~60s after call drops).
+ * Set POLL_INTERVAL_SECONDS=0 for a one-shot run (legacy cron mode).
+ */
+function getPollIntervalMs() {
+  const raw = process.env.POLL_INTERVAL_SECONDS;
+  const n = raw == null || raw === '' ? 30 : Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.max(15, n) * 1000;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**
@@ -95,7 +110,9 @@ async function processRecording(drive, recording, recordingsFolderId, stateData)
   if (prepared.converted) {
     console.log(`Converted ${recording.name} → ${prepared.fileName} for OpenAI`);
   }
-  const transcriptText = await transcribeAudio(prepared.fileName, prepared.buffer);
+  const transcriptText = await transcribeAudio(prepared.fileName, prepared.buffer, {
+    durationSeconds: recording.durationSeconds,
+  });
 
   const docxBuffer = await buildTranscriptDocx(
     {
@@ -163,7 +180,7 @@ async function colocateExistingTranscripts(drive, recordings, stateData, recordi
   return moved;
 }
 
-async function main() {
+async function runOnce({ colocate = false } = {}) {
   const minDuration = getMinDurationSeconds();
   const maxDuration = getMaxDurationSeconds();
   const maxFilesPerRun = getMaxFilesPerRun();
@@ -200,14 +217,16 @@ async function main() {
     return bt - at;
   });
 
-  const moved = await colocateExistingTranscripts(
-    drive,
-    recordings,
-    stateData,
-    recordingsFolderId,
-  );
-  if (moved > 0) {
-    console.log(`Colocated ${moved} existing transcript(s) with their recordings`);
+  if (colocate) {
+    const moved = await colocateExistingTranscripts(
+      drive,
+      recordings,
+      stateData,
+      recordingsFolderId,
+    );
+    if (moved > 0) {
+      console.log(`Colocated ${moved} existing transcript(s) with their recordings`);
+    }
   }
 
   // Re-open anything previously marked skipped_backlog that now falls inside the window.
@@ -310,7 +329,7 @@ async function main() {
       if (err instanceof OpenAIQuotaError) {
         stoppedForQuota = true;
         console.error(
-          'OpenAI credits exhausted — stopping this run. Add credits, then new call drops will resume.',
+          'OpenAI credits exhausted — stopping this cycle. Will retry on next poll.',
         );
         try {
           await flushState();
@@ -341,6 +360,28 @@ async function main() {
   console.log(
     `Summary: found=${recordings.length} new=${newCount} succeeded=${succeeded} errored=${errored} skipped_short=${skippedShort} skipped_long=${skippedLong} skipped_backlog=${skippedBacklog}${stoppedForQuota ? ' stopped_for_quota=1' : ''}`,
   );
+}
+
+async function main() {
+  const pollMs = getPollIntervalMs();
+  if (!pollMs) {
+    await runOnce({ colocate: true });
+    return;
+  }
+
+  console.log(
+    `Continuous poller every ${pollMs / 1000}s (target: transcript ~60s after call lands in Drive)`,
+  );
+  let first = true;
+  for (;;) {
+    try {
+      await runOnce({ colocate: first });
+      first = false;
+    } catch (err) {
+      console.error(`Poll cycle error: ${err.message}`);
+    }
+    await sleep(pollMs);
+  }
 }
 
 main().catch((err) => {

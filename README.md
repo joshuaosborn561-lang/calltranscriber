@@ -55,7 +55,7 @@ Each recording needs a sidecar JSON with the **same base name** in the same fold
 
 `duration` is **milliseconds**. Only calls **longer than 2 minutes** and **shorter than 30 minutes** are transcribed (`MIN_DURATION_SECONDS=120`, `MAX_DURATION_SECONDS=1800`).
 
-By default the cron only backfills / watches the **last 3 days** (`LOOKBACK_DAYS=3`). Older Cube ACR history is skipped. Newest recordings are processed first.
+By default the worker only backfills / watches the **last 3 days** (`LOOKBACK_DAYS=3`). Older Cube ACR history is skipped. Newest recordings are processed first. Long calls are split into ~10 minute chunks for OpenAI.
 
 ## 4. State file (no database)
 
@@ -70,14 +70,14 @@ npm install
 npm start
 ```
 
-## 6. Deploy to Railway as a Cron Job
+## 6. Deploy to Railway as an always-on worker
 
 1. Deploy this repo to Railway.
 2. Service settings:
    - **Start Command:** `npm start`
-   - **Cron Schedule:** e.g. `*/5 * * * *` (checks for new dropped calls every 5 minutes)
+   - **No cron schedule** — polls Drive every `POLL_INTERVAL_SECONDS` (default **30**) aiming for transcripts within about **60 seconds** after Cube ACR uploads the file
+   - Restart policy: on failure
 3. Copy env vars from `.env.example` into Railway Variables (prefer copying Google OAuth vars from replyhandler).
-4. Keep it a cron/scheduled job, not an always-on web service.
 
 ## Project layout
 
@@ -86,9 +86,10 @@ package.json
 .env.example
 README.md
 src/
-  index.js            # entry point
+  index.js            # entry point / continuous poller
   driveClient.js      # OAuth/Drive, recursive list, state file, upload
   stateStore.js       # in-memory status helpers (persisted to Drive JSON)
+  audioConvert.js     # AMR→MP3 + long-call chunking
   openaiTranscribe.js
   docxBuilder.js
 ```
