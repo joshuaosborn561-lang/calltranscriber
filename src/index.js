@@ -360,6 +360,8 @@ async function runOnce({ colocate = false } = {}) {
   console.log(
     `Summary: found=${recordings.length} new=${newCount} succeeded=${succeeded} errored=${errored} skipped_short=${skippedShort} skipped_long=${skippedLong} skipped_backlog=${skippedBacklog}${stoppedForQuota ? ' stopped_for_quota=1' : ''}`,
   );
+
+  return stoppedForQuota;
 }
 
 async function main() {
@@ -373,14 +375,33 @@ async function main() {
     `Continuous poller every ${pollMs / 1000}s (target: transcript ~60s after call lands in Drive)`,
   );
   let first = true;
+  let quotaBackoffMs = 0;
   for (;;) {
+    if (quotaBackoffMs > 0) {
+      console.log(
+        `OpenAI spend/quota backoff: sleeping ${Math.round(quotaBackoffMs / 1000)}s before next attempt`,
+      );
+      await sleep(quotaBackoffMs);
+    }
+
+    let stoppedForQuota = false;
     try {
-      await runOnce({ colocate: first });
+      stoppedForQuota = await runOnce({ colocate: first });
       first = false;
     } catch (err) {
       console.error(`Poll cycle error: ${err.message}`);
     }
-    await sleep(pollMs);
+
+    if (stoppedForQuota) {
+      // Don't hammer OpenAI every 30s when the project spend limit is hit.
+      quotaBackoffMs = Math.min(
+        Math.max(quotaBackoffMs * 2, 5 * 60 * 1000),
+        30 * 60 * 1000,
+      );
+    } else {
+      quotaBackoffMs = 0;
+      await sleep(pollMs);
+    }
   }
 }
 
