@@ -14,6 +14,7 @@ import { buildTranscriptDocx } from './docxBuilder.js';
 import {
   getAlreadyProcessedIds,
   clearBacklogSkips,
+  clearLongSkips,
   markTranscribing,
   markDone,
   markError,
@@ -29,11 +30,16 @@ function getMinDurationSeconds() {
   return Number.isFinite(n) ? n : 120;
 }
 
-/** Default 1800s — skip calls 30 minutes or longer. */
+/**
+ * Optional upper duration cap (seconds). Default: none.
+ * Set MAX_DURATION_SECONDS to skip very long calls; 0 / empty = no max.
+ * Long calls are chunked for OpenAI instead of being excluded.
+ */
 function getMaxDurationSeconds() {
   const raw = process.env.MAX_DURATION_SECONDS;
-  const n = raw == null || raw === '' ? 1800 : Number(raw);
-  return Number.isFinite(n) ? n : 1800;
+  if (raw == null || raw === '' || raw === '0') return Infinity;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : Infinity;
 }
 
 /** Optional cap so one poll cycle doesn't run forever. */
@@ -196,7 +202,9 @@ async function runOnce({ colocate = false } = {}) {
       : 'Transcripts folder: same folder as each recording',
   );
   console.log(
-    `Duration window: >${minDuration}s and <${maxDuration}s`,
+    Number.isFinite(maxDuration)
+      ? `Duration window: >${minDuration}s and <${maxDuration}s`
+      : `Duration window: >${minDuration}s (no max — long calls are chunked)`,
   );
   console.log(`Backfill window: after ${processCreatedAfter.toISOString()} (LOOKBACK_DAYS)`);
   if (Number.isFinite(maxFilesPerRun)) {
@@ -229,16 +237,26 @@ async function runOnce({ colocate = false } = {}) {
     }
   }
 
-  // Re-open anything previously marked skipped_backlog that now falls inside the window.
+  // Re-open anything previously marked skipped_backlog / skipped_long inside the window.
   const inWindowIds = recordings
     .filter(
       (r) =>
         r.createdTime && new Date(r.createdTime) >= processCreatedAfter,
     )
     .map((r) => r.id);
-  const cleared = clearBacklogSkips(stateData, inWindowIds);
-  if (cleared > 0) {
-    console.log(`Reopened ${cleared} previously skipped_backlog file(s) in lookback window`);
+  const clearedBacklog = clearBacklogSkips(stateData, inWindowIds);
+  const clearedLong = clearLongSkips(stateData, inWindowIds);
+  if (clearedBacklog > 0 || clearedLong > 0) {
+    if (clearedBacklog > 0) {
+      console.log(
+        `Reopened ${clearedBacklog} previously skipped_backlog file(s) in lookback window`,
+      );
+    }
+    if (clearedLong > 0) {
+      console.log(
+        `Reopened ${clearedLong} previously skipped_long file(s) in lookback window`,
+      );
+    }
     stateFileId = await saveState(drive, recordingsFolderId, stateFileId, stateData);
   }
 

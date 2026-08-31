@@ -6,7 +6,7 @@
 const SKIP_STATUSES = new Set([
   'done',
   'skipped_short',
-  'skipped_long',
+  // skipped_long is reopenable when MAX_DURATION_SECONDS is raised / disabled.
   // skipped_backlog is NOT permanent — a rolling LOOKBACK_DAYS window can reopen
   // older files when the lookback expands.
   // "transcribing" is intentionally NOT skipped forever — a crashed run can leave
@@ -29,6 +29,19 @@ export function clearBacklogSkips(stateData, driveFileIds) {
   for (const id of driveFileIds) {
     const row = stateData.files?.[id];
     if (row?.status === 'skipped_backlog') {
+      delete stateData.files[id];
+      cleared += 1;
+    }
+  }
+  return cleared;
+}
+
+/** Clear skipped_long so long calls can be retried (chunked transcription). */
+export function clearLongSkips(stateData, driveFileIds) {
+  let cleared = 0;
+  for (const id of driveFileIds) {
+    const row = stateData.files?.[id];
+    if (row?.status === 'skipped_long') {
       delete stateData.files[id];
       cleared += 1;
     }

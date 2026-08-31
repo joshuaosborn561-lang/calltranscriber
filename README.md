@@ -55,7 +55,7 @@ Each recording needs a sidecar JSON with the **same base name** in the same fold
 
 `duration` is **milliseconds**. Only calls **longer than 2 minutes** and **shorter than 30 minutes** are transcribed (`MIN_DURATION_SECONDS=120`, `MAX_DURATION_SECONDS=1800`).
 
-By default the worker only backfills / watches the **last 3 days** (`LOOKBACK_DAYS=3`). Older Cube ACR history is skipped. Newest recordings are processed first. Long calls are split into ~10 minute chunks for OpenAI.
+By default the worker only backfills / watches the **last 3 days** (`LOOKBACK_DAYS=3`). Older Cube ACR history is skipped. Newest recordings are processed first. Calls shorter than 2 minutes are skipped; there is **no max duration** by default — long calls are split into ~10 minute chunks for OpenAI.
 
 ## 4. State file (no database)
 
