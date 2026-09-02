@@ -7,7 +7,7 @@ Processed-file tracking is a small JSON file in Drive (`.call-transcriber-state.
 ## Prerequisites
 
 - Node.js 20+
-- **ffmpeg** (converts Cube ACR `.amr` → `.mp3`; OpenAI does not accept AMR)
+- **ffmpeg** (converts Cube ACR `.amr` → `.mp3`; OpenAI does not accept AMR). The deploy image installs it — see below.
 - Google OAuth client + refresh token with Drive access (or a service account)
 - An OpenAI API key
 - A Railway account (for scheduled runs)
@@ -59,7 +59,7 @@ By default the worker only backfills / watches the **last 3 days** (`LOOKBACK_DA
 
 ## 4. State file (no database)
 
-Progress is stored in Drive as `.call-transcriber-state.json` inside the recordings root. Statuses: `transcribing`, `done`, `error`, `skipped_short`, `skipped_long`, `skipped_backlog`. Files in `done` / `skipped_*` are not reprocessed.
+Progress is stored in Drive as `.call-transcriber-state.json` inside the recordings root. Statuses: `transcribing`, `done`, `error`, `skipped_short`, `skipped_long`, `skipped_backlog`. Files in `done` / `skipped_*` are not reprocessed. Rows with `status=error` whose message is a missing-ffmpeg / `spawn ffmpeg ENOENT` failure are cleared on the next poll after ffmpeg is available, and an existing `… - transcript.docx` in the same folder is reused (no duplicate upload).
 
 ## 5. Local run
 
@@ -67,10 +67,27 @@ Progress is stored in Drive as `.call-transcriber-state.json` inside the recordi
 cp .env.example .env
 # fill in .env
 npm install
+# ffmpeg must be on PATH (apt/brew). This is what Railway runs at container start:
+npm run check:ffmpeg
+npm test
 npm start
 ```
 
 ## 6. Deploy to Railway as an always-on worker
+
+ffmpeg **must** be in the runtime image. A fresh deploy without it fails immediately (`ffmpeg is not installed or not on PATH`) instead of writing `spawn ffmpeg ENOENT` onto every long call.
+
+The repo installs ffmpeg for every Railway builder this service has used:
+
+| Builder | How ffmpeg is installed |
+| --- | --- |
+| **Railpack** (current `railway.toml` default) | `railpack.json` → `deploy.aptPackages` includes `ffmpeg` |
+| Nixpacks | `nixpacks.toml` → `nixPkgs = ["...", "ffmpeg"]` |
+| Dockerfile | `Dockerfile` `apt-get install ffmpeg` (switch **Builder** to Dockerfile if you want this path) |
+
+**Redeploy after merging this change.** Railway does not pick up `railpack.json` / `nixpacks.toml` / `Dockerfile` until a new build. In the service: **Deploy → Redeploy** (or push to the connected branch). Confirm the build log installs `ffmpeg`, then the start log should print `ffmpeg: /usr/bin/ffmpeg (ffmpeg version …)`.
+
+Optional dashboard belt-and-suspenders (not required if `railpack.json` is used): set `RAILPACK_DEPLOY_APT_PACKAGES=... ffmpeg`.
 
 1. Deploy this repo to Railway.
 2. Service settings:
@@ -78,15 +95,20 @@ npm start
    - **No cron schedule** — polls Drive every `POLL_INTERVAL_SECONDS` (default **30**) aiming for transcripts within about **60 seconds** after Cube ACR uploads the file
    - Restart policy: on failure
 3. Copy env vars from `.env.example` into Railway Variables (prefer copying Google OAuth vars from replyhandler).
+4. After the ffmpeg-enabled deploy, errored Kyle / Dave / etc. ENOENT rows requeue automatically. Do **not** delete their Drive recordings or existing `done` transcripts.
 
 ## Project layout
 
 ```
 package.json
+railpack.json         # Railway Railpack: apt-install ffmpeg at runtime
+nixpacks.toml         # Nixpacks fallback
+Dockerfile            # optional explicit image
 .env.example
 README.md
 src/
   index.js            # entry point / continuous poller
+  ffmpegBin.js        # resolve + startup check (npm run check:ffmpeg)
   driveClient.js      # OAuth/Drive, recursive list, state file, upload
   stateStore.js       # in-memory status helpers (persisted to Drive JSON)
   audioConvert.js     # AMR→MP3 + long-call chunking

@@ -253,6 +253,22 @@ export async function uploadDocx(drive, folderId, fileName, buffer) {
 }
 
 /**
+ * Find a file by exact name in a folder (used to reuse an existing transcript).
+ */
+export async function findFileInFolder(drive, folderId, fileName) {
+  if (!folderId || !fileName) return null;
+  const escaped = fileName.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+  const res = await drive.files.list({
+    q: `'${folderId}' in parents and name = '${escaped}' and trashed = false`,
+    fields: 'files(id, name)',
+    pageSize: 1,
+    supportsAllDrives: true,
+    includeItemsFromAllDrives: true,
+  });
+  return (res.data.files && res.data.files[0]) || null;
+}
+
+/**
  * Move a Drive file into targetFolderId (removes other parents).
  */
 export async function moveFileToFolder(drive, fileId, targetFolderId) {

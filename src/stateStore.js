@@ -49,6 +49,30 @@ export function clearLongSkips(stateData, driveFileIds) {
   return cleared;
 }
 
+const FFMPEG_MISSING_RE =
+  /ffmpeg failed to start|spawn .*ffmpeg.* ENOENT|ffmpeg is not installed|not on PATH/i;
+
+/** True when a stored error is only "ffmpeg missing" (safe to retry after deploy). */
+export function isFfmpegMissingError(message) {
+  return FFMPEG_MISSING_RE.test(String(message || ''));
+}
+
+/**
+ * Drop error rows caused only by a missing ffmpeg binary so they reprocess.
+ * `done` rows are left alone — do not duplicate existing transcripts.
+ */
+export function clearFfmpegMissingErrors(stateData, driveFileIds) {
+  let cleared = 0;
+  for (const id of driveFileIds) {
+    const row = stateData.files?.[id];
+    if (row?.status === 'error' && isFfmpegMissingError(row.error)) {
+      delete stateData.files[id];
+      cleared += 1;
+    }
+  }
+  return cleared;
+}
+
 export function setFileState(stateData, driveFileId, patch) {
   const prev = stateData.files[driveFileId] || {};
   stateData.files[driveFileId] = {
