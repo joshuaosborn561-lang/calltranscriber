@@ -4,6 +4,7 @@ import {
   listRecordingsWithMetadata,
   downloadFileBuffer,
   uploadDocx,
+  findFileInFolder,
   moveFileToFolder,
   loadState,
   saveState,
@@ -11,10 +12,12 @@ import {
 import { OpenAIQuotaError, transcribeAudio } from './openaiTranscribe.js';
 import { ensureOpenAiAudio } from './audioConvert.js';
 import { buildTranscriptDocx } from './docxBuilder.js';
+import { assertFfmpegAvailable } from './ffmpegBin.js';
 import {
   getAlreadyProcessedIds,
   clearBacklogSkips,
   clearLongSkips,
+  clearFfmpegMissingErrors,
   markTranscribing,
   markDone,
   markError,
@@ -111,6 +114,20 @@ function transcriptFileName(recordingName) {
 }
 
 async function processRecording(drive, recording, recordingsFolderId, stateData) {
+  const folderId = resolveTranscriptFolderId(recording, recordingsFolderId);
+  const existing = await findFileInFolder(
+    drive,
+    folderId,
+    transcriptFileName(recording.name),
+  );
+  if (existing?.id) {
+    console.log(
+      `Transcript already in Drive for ${recording.name}; reusing ${existing.id} (no re-upload)`,
+    );
+    markDone(stateData, recording, existing.id);
+    return existing.id;
+  }
+
   const audioBuffer = await downloadFileBuffer(drive, recording.id);
   const prepared = await ensureOpenAiAudio(recording.name, audioBuffer);
   if (prepared.converted) {
@@ -131,7 +148,6 @@ async function processRecording(drive, recording, recordingsFolderId, stateData)
     transcriptText,
   );
 
-  const folderId = resolveTranscriptFolderId(recording, recordingsFolderId);
   const docxFileId = await uploadDocx(
     drive,
     folderId,
@@ -246,7 +262,8 @@ async function runOnce({ colocate = false } = {}) {
     .map((r) => r.id);
   const clearedBacklog = clearBacklogSkips(stateData, inWindowIds);
   const clearedLong = clearLongSkips(stateData, inWindowIds);
-  if (clearedBacklog > 0 || clearedLong > 0) {
+  const clearedFfmpeg = clearFfmpegMissingErrors(stateData, inWindowIds);
+  if (clearedBacklog > 0 || clearedLong > 0 || clearedFfmpeg > 0) {
     if (clearedBacklog > 0) {
       console.log(
         `Reopened ${clearedBacklog} previously skipped_backlog file(s) in lookback window`,
@@ -255,6 +272,11 @@ async function runOnce({ colocate = false } = {}) {
     if (clearedLong > 0) {
       console.log(
         `Reopened ${clearedLong} previously skipped_long file(s) in lookback window`,
+      );
+    }
+    if (clearedFfmpeg > 0) {
+      console.log(
+        `Requeued ${clearedFfmpeg} file(s) that failed only because ffmpeg was missing`,
       );
     }
     stateFileId = await saveState(drive, recordingsFolderId, stateFileId, stateData);
@@ -383,6 +405,8 @@ async function runOnce({ colocate = false } = {}) {
 }
 
 async function main() {
+  await assertFfmpegAvailable();
+
   const pollMs = getPollIntervalMs();
   if (!pollMs) {
     await runOnce({ colocate: true });

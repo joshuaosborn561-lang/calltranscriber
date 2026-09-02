@@ -1,5 +1,8 @@
 [build]
-builder = "NIXPACKS"
+# Railpack is Railway's current default builder and ignores nixpacks.toml.
+# ffmpeg is installed by railpack.json (apt) for this builder.
+# Fallback: nixpacks.toml (Nixpacks) and Dockerfile (switch builder to DOCKERFILE).
+builder = "RAILPACK"
 
 [deploy]
 startCommand = "npm start"

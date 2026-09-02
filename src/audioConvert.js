@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, readdir, readFile, rm, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { FfmpegMissingError, resolveFfmpegPath } from './ffmpegBin.js';
 
 /** Formats OpenAI gpt-4o-mini-transcribe accepts without conversion. */
 const OPENAI_NATIVE_EXTS = new Set([
@@ -122,17 +123,27 @@ export async function splitMp3IntoChunks(
   }
 }
 
-function runFfmpeg(args) {
+async function runFfmpeg(args) {
+  const ffmpegPath = await resolveFfmpegPath();
   return new Promise((resolve, reject) => {
-    const child = spawn('ffmpeg', args, { stdio: ['ignore', 'ignore', 'pipe'] });
+    const child = spawn(ffmpegPath, args, { stdio: ['ignore', 'ignore', 'pipe'] });
     let stderr = '';
     child.stderr.on('data', (chunk) => {
       stderr += chunk.toString();
     });
     child.on('error', (err) => {
+      if (err.code === 'ENOENT') {
+        reject(
+          new FfmpegMissingError(
+            `ffmpeg failed to start (spawn ${ffmpegPath} ENOENT). ` +
+              'Install ffmpeg in the deploy image and redeploy.',
+          ),
+        );
+        return;
+      }
       reject(
         new Error(
-          `ffmpeg failed to start (${err.message}). Install ffmpeg on the host.`,
+          `ffmpeg failed to start (${err.message}). Binary: ${ffmpegPath}`,
         ),
       );
     });
