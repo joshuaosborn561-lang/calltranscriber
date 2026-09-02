@@ -449,5 +449,6 @@ async function main() {
 
 main().catch((err) => {
   console.error(`Fatal: ${err.message}`);
-  process.exitCode = 1;
+  // Hard-exit so Railway cannot mark a deploy SUCCESS without ffmpeg.
+  process.exit(1);
 });

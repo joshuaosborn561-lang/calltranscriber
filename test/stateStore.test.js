@@ -20,6 +20,12 @@ describe('ffmpeg ENOENT requeue', () => {
       ),
       true,
     );
+    assert.equal(
+      isFfmpegMissingError(
+        'ffmpeg failed to start (spawn /usr/bin/ffmpeg ENOENT). Install ffmpeg in the deploy image and redeploy.',
+      ),
+      true,
+    );
     assert.equal(isFfmpegMissingError('OpenAI transcription failed (429)'), false);
     assert.equal(isFfmpegMissingError('ffmpeg exited 1: Invalid data'), false);
   });
