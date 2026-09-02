@@ -81,7 +81,7 @@ export async function resolveFfmpegPath() {
     throw new FfmpegMissingError(
       `ffmpeg is not installed or not on PATH (PATH=${process.env.PATH || ''}). ` +
         'Cube ACR .amr recordings cannot be converted. ' +
-        'Install ffmpeg in the deploy image (Dockerfile / railpack.json / nixpacks.toml) and redeploy.',
+        'The Railway image must be built from Dockerfile (apt-get install ffmpeg). Redeploy with a new build, not a restart.',
     );
   }
   cachedFfmpegPath = resolved;

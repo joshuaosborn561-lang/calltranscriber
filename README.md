@@ -77,17 +77,22 @@ npm start
 
 ffmpeg **must** be in the runtime image. A fresh deploy without it fails immediately (`ffmpeg is not installed or not on PATH`) instead of writing `spawn ffmpeg ENOENT` onto every long call.
 
-The repo installs ffmpeg for every Railway builder this service has used:
+`railway.toml` / `railway.json` force the **Dockerfile** builder. PR #2 left the builder on **Railpack**; Railpack ignored `railpack.json` `aptPackages` (production build logs had no ffmpeg install) and the Dockerfile never ran.
 
 | Builder | How ffmpeg is installed |
 | --- | --- |
-| **Railpack** (current `railway.toml` default) | `railpack.json` → `deploy.aptPackages` includes `ffmpeg` |
-| Nixpacks | `nixpacks.toml` → `nixPkgs = ["...", "ffmpeg"]` |
-| Dockerfile | `Dockerfile` `apt-get install ffmpeg` (switch **Builder** to Dockerfile if you want this path) |
+| **Dockerfile** (required — `railway.toml` / `railway.json`) | `apt-get install ffmpeg`, then `ffmpeg -version` (build fails if that command fails) |
+| Railpack (fallback only) | `railpack.json` → `buildAptPackages` + `deploy.aptPackages` |
+| Nixpacks (fallback only) | `nixpacks.toml` → `nixPkgs = ["...", "ffmpeg"]` |
 
-**Redeploy after merging this change.** Railway does not pick up `railpack.json` / `nixpacks.toml` / `Dockerfile` until a new build. In the service: **Deploy → Redeploy** (or push to the connected branch). Confirm the build log installs `ffmpeg`, then the start log should print `ffmpeg: /usr/bin/ffmpeg (ffmpeg version …)`.
+**A new image build is required.** Restart / Redeploy of the old Railpack image will not install ffmpeg.
 
-Optional dashboard belt-and-suspenders (not required if `railpack.json` is used): set `RAILPACK_DEPLOY_APT_PACKAGES=... ffmpeg`.
+1. Merge into the branch Railway deploys (`cursor/call-transcriber-cron-6c9a`).
+2. In the service: **Settings → Build → Builder = Dockerfile**, Dockerfile path `Dockerfile`.
+3. Add `NO_CACHE=1` for one deploy (Variables), then **Deployments → Deploy** (new build from the latest commit). Do **not** use Restart.
+4. Build log must show `Using detected Dockerfile!`, `apt-get install … ffmpeg`, `=== verifying ffmpeg is on PATH ===`, and `ffmpeg version`.
+5. Start log must print `ffmpeg: /usr/bin/ffmpeg (ffmpeg version …)`.
+6. Remove `NO_CACHE=1` after that deploy succeeds.
 
 1. Deploy this repo to Railway.
 2. Service settings:
@@ -101,9 +106,9 @@ Optional dashboard belt-and-suspenders (not required if `railpack.json` is used)
 
 ```
 package.json
-railpack.json         # Railway Railpack: apt-install ffmpeg at runtime
-nixpacks.toml         # Nixpacks fallback
-Dockerfile            # optional explicit image
+railway.toml / railway.json   # force Dockerfile builder
+Dockerfile                    # installs ffmpeg; build fails if missing
+railpack.json / nixpacks.toml # fallbacks only
 .env.example
 README.md
 src/
