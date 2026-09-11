@@ -9,7 +9,11 @@ import {
   loadState,
   saveState,
 } from './driveClient.js';
-import { OpenAIQuotaError, transcribeAudio } from './openaiTranscribe.js';
+import {
+  TranscriptionQuotaError,
+  getTranscribeProvider,
+  transcribeAudio,
+} from './transcribe.js';
 import { ensureOpenAiAudio } from './audioConvert.js';
 import { buildTranscriptDocx } from './docxBuilder.js';
 import { assertFfmpegAvailable } from './ffmpegBin.js';
@@ -131,7 +135,9 @@ async function processRecording(drive, recording, recordingsFolderId, stateData)
   const audioBuffer = await downloadFileBuffer(drive, recording.id);
   const prepared = await ensureOpenAiAudio(recording.name, audioBuffer);
   if (prepared.converted) {
-    console.log(`Converted ${recording.name} → ${prepared.fileName} for OpenAI`);
+    console.log(
+      `Converted ${recording.name} → ${prepared.fileName} for ${getTranscribeProvider()}`,
+    );
   }
   const transcriptText = await transcribeAudio(prepared.fileName, prepared.buffer, {
     durationSeconds: recording.durationSeconds,
@@ -212,6 +218,7 @@ async function runOnce({ colocate = false } = {}) {
   const recordingsFolderId = await resolveRecordingsFolderId(drive);
 
   console.log(`Recordings folder: ${recordingsFolderId}`);
+  console.log(`Transcription provider: ${getTranscribeProvider()}`);
   console.log(
     process.env.DRIVE_TRANSCRIPTS_FOLDER_ID?.trim()
       ? `Transcripts folder override: ${process.env.DRIVE_TRANSCRIPTS_FOLDER_ID.trim()}`
@@ -366,10 +373,10 @@ async function runOnce({ colocate = false } = {}) {
       markError(stateData, recording, err.message);
       stateDirty = true;
 
-      if (err instanceof OpenAIQuotaError) {
+      if (err instanceof TranscriptionQuotaError) {
         stoppedForQuota = true;
         console.error(
-          'OpenAI credits exhausted — stopping this cycle. Will retry on next poll.',
+          'Transcription credits exhausted — stopping this cycle. Will retry on next poll.',
         );
         try {
           await flushState();
@@ -421,7 +428,7 @@ async function main() {
   for (;;) {
     if (quotaBackoffMs > 0) {
       console.log(
-        `OpenAI spend/quota backoff: sleeping ${Math.round(quotaBackoffMs / 1000)}s before next attempt`,
+        `Transcription quota backoff: sleeping ${Math.round(quotaBackoffMs / 1000)}s before next attempt`,
       );
       await sleep(quotaBackoffMs);
     }
@@ -435,7 +442,7 @@ async function main() {
     }
 
     if (stoppedForQuota) {
-      // Don't hammer OpenAI every 30s when the project spend limit is hit.
+      // Don't hammer the provider every 30s when credits / spend limit are hit.
       quotaBackoffMs = Math.min(
         Math.max(quotaBackoffMs * 2, 5 * 60 * 1000),
         30 * 60 * 1000,

@@ -1,16 +1,16 @@
 # call-transcriber
 
-Node.js (ESM) Railway **cron job** that watches a Google Drive folder (default **Cube ACR**, including date subfolders) for call recordings, skips short misdials, transcribes new files with OpenAI, and uploads `.docx` transcripts back to Drive.
+Node.js (ESM) Railway **worker** that watches a Google Drive folder (default **Cube ACR**, including date subfolders) for call recordings, skips short misdials, transcribes new files with **AssemblyAI** (or OpenAI), and uploads `.docx` transcripts back to Drive.
 
 Processed-file tracking is a small JSON file in Drive (`.call-transcriber-state.json`) — no database.
 
 ## Prerequisites
 
 - Node.js 20+
-- **ffmpeg** (converts Cube ACR `.amr` → `.mp3`; OpenAI does not accept AMR). The deploy image installs it — see below.
+- **ffmpeg** (converts Cube ACR `.amr` → `.mp3`). The deploy image installs it — see below.
 - Google OAuth client + refresh token with Drive access (or a service account)
-- An OpenAI API key
-- A Railway account (for scheduled runs)
+- An **AssemblyAI** API key (preferred) or OpenAI API key
+- A Railway account (for the always-on worker)
 
 ## 1. Google Drive auth (OAuth refresh token)
 
@@ -32,10 +32,11 @@ If you already authorized Drive for replyhandler on Railway, copy those three va
 
 By default each transcript `.docx` is uploaded into the **same date subfolder as the recording**. Set `DRIVE_TRANSCRIPTS_FOLDER_ID` only if you want a single dump folder instead.
 
-## 2. OpenAI API key
+## 2. Transcription API key (AssemblyAI preferred)
 
-1. Create a key at [platform.openai.com](https://platform.openai.com/api-keys).
-2. Set `OPENAI_API_KEY`.
+1. Create a key at [assemblyai.com](https://www.assemblyai.com/dashboard/signup).
+2. Set `ASSEMBLYAI_API_KEY` (and optionally `TRANSCRIBE_PROVIDER=assemblyai`).
+3. Fallback: set `OPENAI_API_KEY` and `TRANSCRIBE_PROVIDER=openai` for `gpt-4o-mini-transcribe`.
 
 ## 3. Recording sidecars
 
