@@ -5,6 +5,7 @@ import {
   TextRun,
   HeadingLevel,
 } from 'docx';
+import { splitSpeakerTurns, uniqueSpeakerLabels } from './speakers.js';
 
 /**
  * Build a .docx Buffer with a metadata header and chunked transcript paragraphs.
@@ -23,6 +24,7 @@ export async function buildTranscriptDocx(meta, transcriptText) {
       ? 'unknown'
       : `${Number(meta.durationSeconds).toFixed(1)} seconds`;
 
+  const speakerLabels = uniqueSpeakerLabels(transcriptText || '');
   const headerLines = [
     `Source recording: ${meta.fileName || 'unknown'}`,
     `Callee: ${meta.callee || 'unknown'}`,
@@ -30,6 +32,9 @@ export async function buildTranscriptDocx(meta, transcriptText) {
     `Duration: ${durationLabel}`,
     `Recorded: ${formatRecorded(meta.recordedAt)}`,
   ];
+  if (speakerLabels.length > 0) {
+    headerLines.push(`Speakers: ${speakerLabels.join(', ')}`);
+  }
 
   const paragraphs = [
     new Paragraph({
@@ -51,13 +56,7 @@ export async function buildTranscriptDocx(meta, transcriptText) {
       text: 'Transcript',
       heading: HeadingLevel.HEADING_2,
     }),
-    ...chunkIntoParagraphs(transcriptText || '').map(
-      (chunk) =>
-        new Paragraph({
-          children: [new TextRun({ text: chunk, size: 22 })],
-          spacing: { after: 200 },
-        }),
-    ),
+    ...transcriptToParagraphs(transcriptText || '').map(paragraphForTurn),
   ];
 
   const doc = new Document({
@@ -79,8 +78,34 @@ function formatRecorded(recordedAt) {
   return d.toISOString();
 }
 
+export function transcriptToParagraphs(text) {
+  const turns = splitSpeakerTurns(text);
+  if (turns) return turns;
+  return chunkIntoParagraphs(text);
+}
+
+function paragraphForTurn(chunk) {
+  const trimmed = String(chunk || '').trim();
+  const labeled = trimmed.match(
+    /^((?:Speaker\s+[A-Z0-9]+)|(?:[^:\n]{1,60})):\s*([\s\S]*)$/i,
+  );
+  if (!labeled) {
+    return new Paragraph({
+      children: [new TextRun({ text: trimmed, size: 22 })],
+      spacing: { after: 200 },
+    });
+  }
+  return new Paragraph({
+    children: [
+      new TextRun({ text: `${labeled[1]}:`, bold: true, size: 22 }),
+      new TextRun({ text: labeled[2] ? ` ${labeled[2]}` : '', size: 22 }),
+    ],
+    spacing: { after: 240 },
+  });
+}
+
 /**
- * Split transcript text into paragraphs of about 4 sentences each.
+ * Split unlabeled transcript text into paragraphs of about 4 sentences each.
  */
 export function chunkIntoParagraphs(text, sentencesPerParagraph = 4) {
   const trimmed = text.replace(/\s+/g, ' ').trim();

@@ -3,6 +3,10 @@
  * (persisted to Drive by driveClient.saveState — no Supabase / DB).
  */
 
+import { SPEAKER_LABELS_VERSION } from './speakers.js';
+
+export { SPEAKER_LABELS_VERSION };
+
 const SKIP_STATUSES = new Set([
   'done',
   'skipped_short',
@@ -57,6 +61,32 @@ export function isFfmpegMissingError(message) {
   return FFMPEG_MISSING_RE.test(String(message || ''));
 }
 
+export function reprocessMissingSpeakersEnabled() {
+  return process.env.REPROCESS_MISSING_SPEAKERS !== '0';
+}
+
+export function needsSpeakerRelabel(row) {
+  if (!row || row.status !== 'done') return false;
+  return Number(row.speaker_labels_version || 0) < SPEAKER_LABELS_VERSION;
+}
+
+/**
+ * Re-open done rows that were written before 2-speaker diarization
+ * so lookback calls (e.g. Cayden) can be relabeled.
+ */
+export function clearStaleSpeakerTranscripts(stateData, driveFileIds) {
+  if (!reprocessMissingSpeakersEnabled()) return 0;
+  let cleared = 0;
+  for (const id of driveFileIds) {
+    const row = stateData.files?.[id];
+    if (needsSpeakerRelabel(row)) {
+      delete stateData.files[id];
+      cleared += 1;
+    }
+  }
+  return cleared;
+}
+
 /**
  * Drop error rows caused only by a missing ffmpeg binary so they reprocess.
  * `done` rows are left alone — do not duplicate existing transcripts.
@@ -92,7 +122,7 @@ export function markTranscribing(stateData, recording) {
   });
 }
 
-export function markDone(stateData, recording, transcriptDocxFileId) {
+export function markDone(stateData, recording, transcriptDocxFileId, extra = {}) {
   return setFileState(stateData, recording.id, {
     file_name: recording.name,
     duration_seconds: recording.durationSeconds,
@@ -100,6 +130,7 @@ export function markDone(stateData, recording, transcriptDocxFileId) {
     transcript_docx_file_id: transcriptDocxFileId,
     error: null,
     completed_at: new Date().toISOString(),
+    ...extra,
   });
 }
 

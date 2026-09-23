@@ -228,9 +228,29 @@ export async function downloadFileBuffer(drive, fileId) {
   return Buffer.from(res.data);
 }
 
-export async function uploadDocx(drive, folderId, fileName, buffer) {
+export async function uploadDocx(
+  drive,
+  folderId,
+  fileName,
+  buffer,
+  { replaceFileId } = {},
+) {
   if (!folderId) {
     throw new Error('Transcripts folder id is required for upload');
+  }
+
+  if (replaceFileId) {
+    const updated = await drive.files.update({
+      fileId: replaceFileId,
+      media: {
+        mimeType:
+          'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        body: Readable.from(buffer),
+      },
+      fields: 'id, name',
+      supportsAllDrives: true,
+    });
+    return updated.data.id;
   }
 
   const res = await drive.files.create({

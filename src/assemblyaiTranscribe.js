@@ -4,6 +4,13 @@
  * Handles long phone calls in one request (no chunking needed).
  */
 
+import {
+  formatUtterances,
+  getSpeakerConstraints,
+  speakerIdentificationNames,
+  uniqueSpeakersFromUtterances,
+} from './speakers.js';
+
 const BASE_URL = 'https://api.assemblyai.com';
 
 export class AssemblyAIQuotaError extends Error {
@@ -36,11 +43,40 @@ function getSpeechModels() {
 }
 
 /**
+ * Build the AssemblyAI create-transcript body (exported for tests).
+ * @param {string} audioUrl
+ * @param {{ fileName?: string, selfSpeakerName?: string, otherSpeakerName?: string }} [opts]
+ */
+export function buildTranscriptRequest(audioUrl, opts = {}) {
+  const speechModels = getSpeechModels();
+  const body = {
+    audio_url: audioUrl,
+    speech_models: speechModels,
+    language_code: process.env.ASSEMBLYAI_LANGUAGE_CODE?.trim() || 'en',
+    ...getSpeakerConstraints(),
+  };
+
+  const names = speakerIdentificationNames(opts);
+  if (body.speaker_labels && names.length >= 2) {
+    body.speech_understanding = {
+      request: {
+        speaker_identification: {
+          speaker_type: 'name',
+          known_values: names,
+        },
+      },
+    };
+  }
+  return body;
+}
+
+/**
  * @param {string} fileName
  * @param {Buffer} audioBuffer
+ * @param {{ selfSpeakerName?: string, otherSpeakerName?: string }} [opts]
  * @returns {Promise<string>} transcript text
  */
-export async function transcribeWithAssemblyAI(fileName, audioBuffer) {
+export async function transcribeWithAssemblyAI(fileName, audioBuffer, opts = {}) {
   const apiKey = getApiKey();
   const headers = { authorization: apiKey };
 
@@ -59,17 +95,15 @@ export async function transcribeWithAssemblyAI(fileName, audioBuffer) {
     throw new Error('AssemblyAI upload response missing upload_url');
   }
 
-  const speechModels = getSpeechModels();
+  const request = buildTranscriptRequest(audioUrl, {
+    fileName,
+    selfSpeakerName: opts.selfSpeakerName,
+    otherSpeakerName: opts.otherSpeakerName,
+  });
   const createRes = await fetch(`${BASE_URL}/v2/transcript`, {
     method: 'POST',
     headers: { ...headers, 'content-type': 'application/json' },
-    body: JSON.stringify({
-      audio_url: audioUrl,
-      speech_models: speechModels,
-      language_code: process.env.ASSEMBLYAI_LANGUAGE_CODE?.trim() || 'en',
-      // Phone calls often have two speakers; cheap and useful in the .docx
-      speaker_labels: process.env.ASSEMBLYAI_SPEAKER_LABELS !== '0',
-    }),
+    body: JSON.stringify(request),
   });
   if (!createRes.ok) {
     const body = await createRes.text();
@@ -80,8 +114,13 @@ export async function transcribeWithAssemblyAI(fileName, audioBuffer) {
   if (!transcriptId) {
     throw new Error('AssemblyAI create transcript response missing id');
   }
+  const speakerHint = request.speaker_options
+    ? `speakers=${request.speaker_options.min_speakers_expected}-${request.speaker_options.max_speakers_expected}`
+    : request.speakers_expected
+      ? `speakers=${request.speakers_expected}`
+      : 'speakers=off';
   console.log(
-    `AssemblyAI job ${transcriptId} for ${fileName} (models=${speechModels.join(',')})`,
+    `AssemblyAI job ${transcriptId} for ${fileName} (models=${request.speech_models.join(',')}, ${speakerHint})`,
   );
 
   const text = await pollTranscript(apiKey, transcriptId);
@@ -113,10 +152,11 @@ async function pollTranscript(apiKey, transcriptId) {
         throw new Error(`AssemblyAI transcript ${transcriptId} completed with empty text`);
       }
       if (Array.isArray(data.utterances) && data.utterances.length > 0) {
-        return data.utterances
-          .map((u) => `Speaker ${u.speaker}: ${u.text}`.trim())
-          .filter(Boolean)
-          .join('\n\n');
+        const speakers = uniqueSpeakersFromUtterances(data.utterances);
+        console.log(
+          `AssemblyAI transcript ${transcriptId} speakers=${speakers.length} (${speakers.join(', ') || 'none'}) utterances=${data.utterances.length}`,
+        );
+        return formatUtterances(data.utterances);
       }
       return data.text;
     }
