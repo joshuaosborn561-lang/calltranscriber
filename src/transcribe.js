@@ -36,14 +36,14 @@ export function getTranscribeProvider() {
 /**
  * @param {string} fileName
  * @param {Buffer} audioBuffer
- * @param {{ durationSeconds?: number }} [opts]
+ * @param {{ durationSeconds?: number, selfSpeakerName?: string, otherSpeakerName?: string }} [opts]
  * @returns {Promise<string>}
  */
 export async function transcribeAudio(fileName, audioBuffer, opts = {}) {
   const provider = getTranscribeProvider();
   try {
     if (provider === 'assemblyai') {
-      return await transcribeWithAssemblyAI(fileName, audioBuffer);
+      return await transcribeWithAssemblyAI(fileName, audioBuffer, opts);
     }
     return await transcribeWithOpenAI(fileName, audioBuffer, opts);
   } catch (err) {

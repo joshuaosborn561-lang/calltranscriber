@@ -18,10 +18,17 @@ import { ensureOpenAiAudio } from './audioConvert.js';
 import { buildTranscriptDocx } from './docxBuilder.js';
 import { assertFfmpegAvailable } from './ffmpegBin.js';
 import {
+  SPEAKER_LABELS_VERSION,
+  contactNameFromRecording,
+  countSpeakerLabels,
+  countSpeakerLabelsInDocx,
+} from './speakers.js';
+import {
   getAlreadyProcessedIds,
   clearBacklogSkips,
   clearLongSkips,
   clearFfmpegMissingErrors,
+  clearStaleSpeakerTranscripts,
   markTranscribing,
   markDone,
   markError,
@@ -124,12 +131,23 @@ async function processRecording(drive, recording, recordingsFolderId, stateData)
     folderId,
     transcriptFileName(recording.name),
   );
+
   if (existing?.id) {
+    const existingBuf = await downloadFileBuffer(drive, existing.id);
+    const existingSpeakers = countSpeakerLabelsInDocx(existingBuf);
+    if (existingSpeakers >= 2) {
+      console.log(
+        `Transcript already in Drive for ${recording.name} (speakers=${existingSpeakers}); reusing ${existing.id}`,
+      );
+      markDone(stateData, recording, existing.id, {
+        speaker_count: existingSpeakers,
+        speaker_labels_version: SPEAKER_LABELS_VERSION,
+      });
+      return existing.id;
+    }
     console.log(
-      `Transcript already in Drive for ${recording.name}; reusing ${existing.id} (no re-upload)`,
+      `Existing transcript for ${recording.name} has ${existingSpeakers} speaker(s); re-transcribing with 2-party diarization`,
     );
-    markDone(stateData, recording, existing.id);
-    return existing.id;
   }
 
   const audioBuffer = await downloadFileBuffer(drive, recording.id);
@@ -139,9 +157,13 @@ async function processRecording(drive, recording, recordingsFolderId, stateData)
       `Converted ${recording.name} → ${prepared.fileName} for ${getTranscribeProvider()}`,
     );
   }
+  const otherSpeakerName = contactNameFromRecording(recording.name);
   const transcriptText = await transcribeAudio(prepared.fileName, prepared.buffer, {
     durationSeconds: recording.durationSeconds,
+    otherSpeakerName,
+    selfSpeakerName: process.env.TRANSCRIPT_SELF_NAME?.trim() || undefined,
   });
+  const speakerCount = countSpeakerLabels(transcriptText);
 
   const docxBuffer = await buildTranscriptDocx(
     {
@@ -159,9 +181,13 @@ async function processRecording(drive, recording, recordingsFolderId, stateData)
     folderId,
     transcriptFileName(recording.name),
     docxBuffer,
+    { replaceFileId: existing?.id },
   );
 
-  markDone(stateData, recording, docxFileId);
+  markDone(stateData, recording, docxFileId, {
+    speaker_count: speakerCount,
+    speaker_labels_version: SPEAKER_LABELS_VERSION,
+  });
   return docxFileId;
 }
 
@@ -217,8 +243,14 @@ async function runOnce({ colocate = false } = {}) {
   const drive = createDriveClient();
   const recordingsFolderId = await resolveRecordingsFolderId(drive);
 
+  const provider = getTranscribeProvider();
   console.log(`Recordings folder: ${recordingsFolderId}`);
-  console.log(`Transcription provider: ${getTranscribeProvider()}`);
+  console.log(`Transcription provider: ${provider}`);
+  if (provider === 'assemblyai') {
+    console.log(
+      'Speaker labels: on (phone calls require at least 2 speakers unless ASSEMBLYAI_SPEAKER_LABELS=0)',
+    );
+  }
   console.log(
     process.env.DRIVE_TRANSCRIPTS_FOLDER_ID?.trim()
       ? `Transcripts folder override: ${process.env.DRIVE_TRANSCRIPTS_FOLDER_ID.trim()}`
@@ -270,7 +302,13 @@ async function runOnce({ colocate = false } = {}) {
   const clearedBacklog = clearBacklogSkips(stateData, inWindowIds);
   const clearedLong = clearLongSkips(stateData, inWindowIds);
   const clearedFfmpeg = clearFfmpegMissingErrors(stateData, inWindowIds);
-  if (clearedBacklog > 0 || clearedLong > 0 || clearedFfmpeg > 0) {
+  const clearedSpeakers = clearStaleSpeakerTranscripts(stateData, inWindowIds);
+  if (
+    clearedBacklog > 0 ||
+    clearedLong > 0 ||
+    clearedFfmpeg > 0 ||
+    clearedSpeakers > 0
+  ) {
     if (clearedBacklog > 0) {
       console.log(
         `Reopened ${clearedBacklog} previously skipped_backlog file(s) in lookback window`,
@@ -284,6 +322,11 @@ async function runOnce({ colocate = false } = {}) {
     if (clearedFfmpeg > 0) {
       console.log(
         `Requeued ${clearedFfmpeg} file(s) that failed only because ffmpeg was missing`,
+      );
+    }
+    if (clearedSpeakers > 0) {
+      console.log(
+        `Requeued ${clearedSpeakers} transcript(s) to split both call speakers`,
       );
     }
     stateFileId = await saveState(drive, recordingsFolderId, stateFileId, stateData);

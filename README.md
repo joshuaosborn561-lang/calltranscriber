@@ -38,6 +38,10 @@ By default each transcript `.docx` is uploaded into the **same date subfolder as
 2. Set `ASSEMBLYAI_API_KEY` (and optionally `TRANSCRIBE_PROVIDER=assemblyai`).
 3. Fallback: set `OPENAI_API_KEY` and `TRANSCRIBE_PROVIDER=openai` for `gpt-4o-mini-transcribe`.
 
+Speaker labels are on by default. Phone calls are treated as two-party (`ASSEMBLYAI_MIN_SPEAKERS=2`) so both sides show up in the `.docx` as separate **Speaker A** / **Speaker B** turns. Optional `TRANSCRIPT_SELF_NAME=Josh` plus the Cube ACR contact name (e.g. `Cayden (+1 …).amr`) asks AssemblyAI to replace those letters with names.
+
+Existing lookback transcripts that only have one speaker are re-transcribed and overwritten once (`REPROCESS_MISSING_SPEAKERS=0` disables that). OpenAI transcripts have no speaker split.
+
 ## 3. Recording sidecars
 
 Each recording needs a sidecar JSON with the **same base name** in the same folder:
@@ -60,7 +64,7 @@ By default the worker only backfills / watches the **last 3 days** (`LOOKBACK_DA
 
 ## 4. State file (no database)
 
-Progress is stored in Drive as `.call-transcriber-state.json` inside the recordings root. Statuses: `transcribing`, `done`, `error`, `skipped_short`, `skipped_long`, `skipped_backlog`. Files in `done` / `skipped_*` are not reprocessed. Rows with `status=error` whose message is a missing-ffmpeg / `spawn ffmpeg ENOENT` failure are cleared on the next poll after ffmpeg is available, and an existing `… - transcript.docx` in the same folder is reused (no duplicate upload).
+Progress is stored in Drive as `.call-transcriber-state.json` inside the recordings root. Statuses: `transcribing`, `done`, `error`, `skipped_short`, `skipped_long`, `skipped_backlog`. Files in `done` / `skipped_*` are not reprocessed, except `done` rows written before speaker-label v2 (lookback window only) which are reopened so single-speaker transcripts can be split. Rows with `status=error` whose message is a missing-ffmpeg / `spawn ffmpeg ENOENT` failure are cleared on the next poll after ffmpeg is available. An existing `… - transcript.docx` with two speaker labels is reused; a one-speaker file is overwritten.
 
 ## 5. Local run
 
@@ -118,6 +122,8 @@ src/
   driveClient.js      # OAuth/Drive, recursive list, state file, upload
   stateStore.js       # in-memory status helpers (persisted to Drive JSON)
   audioConvert.js     # AMR→MP3 + long-call chunking
+  speakers.js         # 2-party diarization + .docx turn splitting
+  assemblyaiTranscribe.js
   openaiTranscribe.js
   docxBuilder.js
 ```
