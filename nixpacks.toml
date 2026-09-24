@@ -1,0 +1,4 @@
+# ffmpeg converts Cube ACR .amr recordings to mp3 for OpenAI transcription.
+# "..." keeps the Node provider packages; ffmpeg provides both ffmpeg and ffprobe.
+[phases.setup]
+nixPkgs = ["...", "ffmpeg"]
